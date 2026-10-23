@@ -4,47 +4,52 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Racetrack stream overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;1,700;1,800&display=swap" rel="stylesheet">
 <style>
-  :root { --s: 1; --bg: rgba(0,0,0,.55); --fg: #fff; --acc: #ffcc00; }
+  :root { --s: 1; --bg: rgba(12,12,14,.68); --fg: #fff; --acc: #ffcc00; --dim: rgba(255,255,255,.7); }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
-    font-family: "Roboto Condensed", "Arial Narrow", Arial, sans-serif; color: var(--fg); }
-  .box { position: absolute; background: var(--bg); border-radius: calc(1.2vmin * var(--s));
-    padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 1px 1px #000; }
-  .num { font-variant-numeric: tabular-nums; font-family: "Roboto Mono", Menlo, Consolas, monospace; }
-  #team { top: 2vmin; left: 2vmin; max-width: 42vw; font-size: calc(3.2vmin * var(--s)); line-height: 1.15; }
-  #team > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #team .drv { color: var(--acc); font-size: calc(2.8vmin * var(--s)); }
-  #team .clk { font-size: calc(2.4vmin * var(--s)); opacity: .85; }
-  #ig { left: 2vmin; bottom: calc(16vmin * var(--s)); display: flex; align-items: center; gap: 1vmin;
-    font-size: calc(2.8vmin * var(--s)); font-weight: 700; letter-spacing: .03em; }
-  #ig svg { width: calc(3.6vmin * var(--s)); height: calc(3.6vmin * var(--s)); flex: none; }
-  #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.2; min-width: calc(30vmin * var(--s)); }
-  #lap .cur { font-size: calc(6.5vmin * var(--s)); font-weight: 700; }
-  #lap .lbl { opacity: .75; font-size: .8em; margin-right: .4em; }
+    font-family: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif; color: var(--fg); }
+  .box { position: absolute; background: var(--bg); border-left: calc(.6vmin * var(--s)) solid var(--acc);
+    border-radius: calc(.5vmin * var(--s)); padding: calc(.9vmin * var(--s)) calc(1.6vmin * var(--s));
+    text-shadow: 0 1px 1px rgba(0,0,0,.6); }
+  .num { font-variant-numeric: tabular-nums; }
+  .lbl { color: var(--dim); font-weight: 600; letter-spacing: .08em; font-size: .72em; margin-right: .5em; }
+  #team { top: 2vmin; left: 2vmin; font-size: calc(2.8vmin * var(--s)); line-height: 1.1; font-weight: 600; letter-spacing: .03em; }
+  #team > div { white-space: nowrap; }
+  #team .nm { color: var(--acc); font-weight: 700; font-style: italic; margin-right: .5em; }
+  #team .drv { color: var(--acc); }
+  #team .row { display: flex; align-items: baseline; }
+  #team .rem { color: var(--dim); margin-left: .6em; }
+  #ig { left: 2vmin; bottom: calc(15.5vmin * var(--s)); display: flex; align-items: center; gap: .9vmin;
+    font-size: calc(2.6vmin * var(--s)); font-weight: 700; letter-spacing: .1em; padding-top: calc(.6vmin * var(--s)); padding-bottom: calc(.6vmin * var(--s)); }
+  #ig svg { width: calc(2.6vmin * var(--s)); height: calc(2.6vmin * var(--s)); flex: none; }
+  #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.15; min-width: calc(28vmin * var(--s)); }
+  #lap .cur { font-size: calc(7vmin * var(--s)); font-weight: 800; font-style: italic; }
   #lap .best { color: #7CFC7C; }
   #lap .dpos { color: #ff7070; } #lap .dneg { color: #7CFC7C; }
-  #stint { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.25; min-width: calc(28vmin * var(--s)); }
-  #stint .hd { color: var(--acc); font-weight: 700; }
-  #stint .avg, #stint .top { font-size: 1.6em; font-weight: 700; }
-  #stint .lbl { opacity: .75; font-size: .8em; margin-right: .4em; }
-  #stint small { font-size: .7em; opacity: .8; }
-  #stint .prv, #stint .tot { font-size: .8em; opacity: .85; }
-  #spd { bottom: 2vmin; left: 2vmin; font-size: calc(10vmin * var(--s)); font-weight: 700; line-height: 1; }
-  #spd small { font-size: .35em; font-weight: 400; margin-left: .2em; }
-  #spd .warn { display: none; font-size: .3em; font-weight: 700; color: #ff5050; }
+  #stint { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.12; min-width: calc(26vmin * var(--s)); }
+  #stint .hd { color: var(--acc); font-weight: 700; font-style: italic; letter-spacing: .05em; margin-bottom: .15em; }
+  #stint .avg, #stint .top { font-size: 1.75em; font-weight: 800; font-style: italic; }
+  #stint small { font-size: .62em; color: var(--dim); font-weight: 600; }
+  #stint .prv, #stint .tot { font-size: .78em; color: var(--dim); font-weight: 600; letter-spacing: .03em; }
+  #spd { bottom: 2vmin; left: 2vmin; font-size: calc(11vmin * var(--s)); font-weight: 800; font-style: italic; line-height: .95; }
+  #spd small { font-size: .3em; font-weight: 600; font-style: normal; color: var(--dim); margin-left: .25em; letter-spacing: .05em; }
+  #spd .warn { display: none; font-size: .26em; font-weight: 700; font-style: normal; color: #ff5050; letter-spacing: .05em; }
   #spd.stale .warn { display: block; }
   #spd.stale .v { opacity: .4; }
   #map { bottom: 2vmin; right: 2vmin; padding: calc(.8vmin * var(--s)); }
-  #map canvas { display: block; width: calc(30vmin * var(--s)); height: calc(30vmin * var(--s)); }
-  #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.5);
-    padding: 0 1vmin; border-radius: .6vmin; font-size: calc(1.8vmin * var(--s)); max-width: 50vw; text-align: center; }
+  #map canvas { display: block; width: calc(28vmin * var(--s)); height: calc(28vmin * var(--s)); }
+  #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.6);
+    padding: 0 1vmin; border-radius: .6vmin; font-size: calc(2.2vmin * var(--s)); max-width: 50vw; text-align: center; }
   #lap.stale .cur { opacity: .4; }
   #st.err { color: #ff6060; font-size: calc(2.6vmin * var(--s)); }
   .hide { display: none !important; }
 </style>
 </head>
 <body>
-<div id="team" class="box"><div class="nm"></div><div class="drv"></div><div class="clk num"></div></div>
+<div id="team" class="box"><div class="row"><span class="nm"></span><span class="clk num"></span><span class="rem num"></span></div><div class="drv"></div></div>
 <div id="stint" class="box">
   <div class="hd"></div>
   <div><span class="lbl">KESKMINE</span><span class="avg num">–</span><small> km/h</small></div>
@@ -58,7 +63,7 @@
   <div><span class="lbl">EELMINE</span><span class="last num">–</span> <span class="delta num"></span></div>
   <div><span class="lbl">PARIM</span><span class="best num">–</span></div>
 </div>
-<div id="ig" class="box hide"><svg viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="igg" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#feda75"/><stop offset=".35" stop-color="#fa7e1e"/><stop offset=".6" stop-color="#d62976"/><stop offset=".8" stop-color="#962fbf"/><stop offset="1" stop-color="#4f5bd5"/></linearGradient></defs><rect x="1" y="1" width="22" height="22" rx="6" fill="url(#igg)"/><rect x="5.5" y="5.5" width="13" height="13" rx="4" fill="none" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="3.2" fill="none" stroke="#fff" stroke-width="2"/><circle cx="17.2" cy="6.8" r="1.2" fill="#fff"/></svg><span></span></div>
+<div id="ig" class="box hide"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="none" stroke="#fff" stroke-width="2"/><circle cx="12" cy="12" r="4.3" fill="none" stroke="#fff" stroke-width="2"/><circle cx="17.4" cy="6.6" r="1.3" fill="#fff"/></svg><span></span></div>
 <div id="spd" class="box num"><span class="v">–</span><small>km/h</small><div class="warn">GPS KADUNUD</div></div>
 <div id="map" class="box"><canvas width="300" height="300"></canvas></div>
 <div id="st" class="num"></div>
@@ -72,7 +77,7 @@
     return isFinite(v) && v >= lo && v <= hi ? v : def;
   }
   var cfg = {
-    team: q.has('team') ? q.get('team') : 'Opel Astra',
+    team: q.has('team') ? q.get('team') : 'MM57',
     car: q.get('car') || '',
     drivers: (q.get('drivers') || '').split(',').filter(Boolean).map(function (s) {
       var a = s.split('@'), hm = (a[1] || '0:0').split(':').map(Number);
@@ -160,7 +165,7 @@
   applySf();
   if (cfg.ig && hidden.indexOf('ig') < 0) {
     var igEl = document.getElementById('ig');
-    igEl.querySelector('span').textContent = '@' + cfg.ig.replace(/^@/, '').toUpperCase();
+    igEl.querySelector('span').textContent = cfg.ig.replace(/^@/, '').toUpperCase();
     igEl.classList.remove('hide');
   }
 
@@ -382,15 +387,21 @@
   function render() {
     var t = now();
     var name = [cfg.car && ('#' + cfg.car), cfg.team].filter(Boolean).join(' ');
-    var drv = driverNow(t), clk = '';
+    var drv = driverNow(t), clk = '', rem = '';
     if (cfg.start) {
       var hm = cfg.start.split(':').map(Number), s = new Date(t); s.setHours(hm[0] || 0, hm[1] || 0, 0, 0);
       var el = t - s.getTime();
-      if (el >= 0 && (!cfg.dur || el < cfg.dur * 3600e3 + 3600e3)) clk = fmtHMS(el) + (cfg.dur ? '  / jäänud ' + fmtHMS(cfg.dur * 3600e3 - el) : '');
+      if (el < 0) clk = 'start ' + cfg.start;
+      else if (cfg.dur && el >= cfg.dur * 3600e3) clk = 'FINIŠ';
+      else {
+        clk = fmtHMS(el);
+        if (cfg.dur) { var r = Math.ceil((cfg.dur * 3600e3 - el) / 60000); rem = '−' + Math.floor(r / 60) + ':' + (r % 60 < 10 ? '0' : '') + (r % 60); }
+      }
     }
     setText('#team .nm', name);
     setText('#team .drv', drv ? 'Roolis: ' + drv : '');
     setText('#team .clk', clk);
+    setText('#team .rem', rem || '');
     if (hidden.indexOf('team') < 0) $('#team').classList.toggle('hide', !name && !clk && !drv);
 
     var st0 = raceStart(t), hIdx = st0 != null && t >= st0 ? Math.floor((t - st0) / 3600e3) : -1;
