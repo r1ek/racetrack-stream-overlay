@@ -16,32 +16,35 @@
     text-shadow: 0 1px 2px rgba(0,0,0,.85); }
   .num { font-variant-numeric: tabular-nums; }
   .lbl { color: var(--dim); font-weight: 600; letter-spacing: .08em; font-size: .72em; margin-right: .5em; }
-  #team { top: 2vmin; left: 2vmin; font-size: calc(2.8vmin * var(--s)); line-height: 1.1; font-weight: 600; letter-spacing: .03em; }
+  #team { bottom: calc(2vmin + 6.4vmin * var(--s)); left: 2vmin; font-size: calc(2.8vmin * var(--s)); line-height: 1.1; font-weight: 600; letter-spacing: .03em; }
   #team > div { white-space: nowrap; }
   #team .nm { color: var(--acc2); font-weight: 700; font-style: italic; margin-right: .5em; }
   #team .drv { color: var(--acc2); }
   #team .row { display: flex; align-items: baseline; }
   #team .rem { color: var(--dim); margin-left: .6em; }
-  #ig { left: 50%; transform: translateX(-50%); bottom: 2vmin; display: flex; align-items: center; gap: .9vmin;
+  #ig { left: 2vmin; bottom: 2vmin; display: flex; align-items: center; gap: .9vmin;
     font-size: calc(2.6vmin * var(--s)); font-weight: 700; letter-spacing: .1em; padding-top: calc(.6vmin * var(--s)); padding-bottom: calc(.6vmin * var(--s)); }
   #ig svg { width: calc(2.6vmin * var(--s)); height: calc(2.6vmin * var(--s)); flex: none; }
   #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.15; min-width: calc(28vmin * var(--s)); }
   #lap .cur { font-size: calc(7vmin * var(--s)); font-weight: 800; font-style: italic; }
   #lap .best { color: #7CFC7C; }
   #lap .dpos { color: #ff7070; } #lap .dneg { color: #7CFC7C; }
-  #stint { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.12; min-width: calc(26vmin * var(--s)); }
-  #stint .hd { color: var(--acc2); font-weight: 700; font-style: italic; letter-spacing: .05em; margin-bottom: .15em; }
-  #stint .avg, #stint .top { font-size: 1.75em; font-weight: 800; font-style: italic; }
+  #stint { bottom: 2vmin; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 1.6vmin;
+    font-size: calc(2.8vmin * var(--s)); line-height: 1.05; white-space: nowrap; }
+  #stint .hd { color: var(--acc2); font-weight: 700; font-style: italic; letter-spacing: .05em; text-align: center; line-height: 1.1; }
+  #stint .hd { white-space: pre-line; }
+  #stint .side { text-align: left; }
+  #stint .avg, #stint .top { font-size: 1.9em; font-weight: 800; font-style: italic; }
   #stint small { font-size: .62em; color: var(--dim); font-weight: 600; }
   #stint .prv, #stint .tot { font-size: .78em; color: var(--dim); font-weight: 600; letter-spacing: .03em; }
-  #spd { bottom: 2vmin; right: calc(2vmin + 31.6vmin * var(--s)); text-align: right; font-size: calc(11vmin * var(--s)); font-weight: 800; font-style: italic; line-height: .95; }
+  #spd { bottom: 2vmin; right: calc(2vmin + 27.6vmin * var(--s)); text-align: right; font-size: calc(11vmin * var(--s)); font-weight: 800; font-style: italic; line-height: .95; }
   #spd small { font-size: .3em; font-weight: 600; font-style: normal; color: var(--dim); margin-left: .25em; letter-spacing: .05em; }
   #spd .warn { display: none; font-size: .26em; font-weight: 700; font-style: normal; color: #ff5050; letter-spacing: .05em; }
   #spd.stale .warn { display: block; }
   #spd.stale .v { opacity: .4; }
   #map { bottom: 2vmin; right: 2vmin; padding: calc(.8vmin * var(--s)); }
-  #map canvas { display: block; width: calc(28vmin * var(--s)); height: calc(28vmin * var(--s)); }
-  #st { position: absolute; bottom: calc(9vmin * var(--s)); left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.6);
+  #map canvas { display: block; width: calc(24vmin * var(--s)); height: calc(24vmin * var(--s)); }
+  #st { position: absolute; bottom: calc(14vmin * var(--s)); left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.6);
     padding: 0 1vmin; border-radius: .6vmin; font-size: calc(2.2vmin * var(--s)); max-width: 50vw; text-align: center; }
   #lap.stale .cur { opacity: .4; }
   #st.err { color: #ff6060; font-size: calc(2.6vmin * var(--s)); }
@@ -54,8 +57,7 @@
   <div class="hd"></div>
   <div><span class="lbl">AVG</span><span class="avg num">–</span><small> km/h</small></div>
   <div><span class="lbl">TOP</span><span class="top num">–</span><small> km/h</small></div>
-  <div class="prv num"></div>
-  <div class="tot num"></div>
+  <div class="side"><div class="prv num"></div><div class="tot num"></div></div>
 </div>
 <div id="lap" class="box">
   <div><span class="lbl">LAP</span><span class="n num">–</span></div>
@@ -409,12 +411,12 @@
     else if (cfg.dur && hIdx >= cfg.dur) setText('#stint .hd', 'FINISH');
     else {
       var h0 = new Date(st0 + hIdx * 3600e3), h1 = new Date(st0 + (hIdx + 1) * 3600e3);
-      setText('#stint .hd', 'HOUR ' + (hIdx + 1) + '  ' + h0.getHours() + '–' + h1.getHours());
+      setText('#stint .hd', 'HOUR ' + (hIdx + 1) + '\n' + h0.getHours() + '–' + h1.getHours());
     }
     var cur = S.hours[Math.min(hIdx, cfg.dur ? cfg.dur - 1 : hIdx)] || null, prv = hIdx > 0 ? S.hours[hIdx - 1] : null;
     setText('#stint .avg', cur && cur.t > 30 ? String(Math.round(cur.d / cur.t * 3.6)) : '–');
     setText('#stint .top', cur && cur.max ? String(Math.round(cur.max)) : '–');
-    setText('#stint .prv', prv && prv.t > 30 ? 'prev hour  ' + Math.round(prv.d / prv.t * 3.6) + ' avg · ' + Math.round(prv.max) + ' top' : '');
+    setText('#stint .prv', prv && prv.t > 30 ? 'prev ' + Math.round(prv.d / prv.t * 3.6) + ' / ' + Math.round(prv.max) : '');
     setText('#stint .tot', S.km > 0.1 ? 'total ' + S.km.toFixed(1) + ' km' : '');
 
     var n = S.laps.length, last = n ? S.laps[n - 1] : null;
