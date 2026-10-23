@@ -23,6 +23,12 @@
   #lap .lbl { opacity: .75; font-size: .8em; margin-right: .4em; }
   #lap .best { color: #7CFC7C; }
   #lap .dpos { color: #ff7070; } #lap .dneg { color: #7CFC7C; }
+  #stint { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.25; min-width: calc(28vmin * var(--s)); }
+  #stint .hd { color: var(--acc); font-weight: 700; }
+  #stint .avg, #stint .top { font-size: 1.6em; font-weight: 700; }
+  #stint .lbl { opacity: .75; font-size: .8em; margin-right: .4em; }
+  #stint small { font-size: .7em; opacity: .8; }
+  #stint .prv, #stint .tot { font-size: .8em; opacity: .85; }
   #spd { bottom: 2vmin; left: 2vmin; font-size: calc(10vmin * var(--s)); font-weight: 700; line-height: 1; }
   #spd small { font-size: .35em; font-weight: 400; margin-left: .2em; }
   #spd .warn { display: none; font-size: .3em; font-weight: 700; color: #ff5050; }
@@ -39,6 +45,13 @@
 </head>
 <body>
 <div id="team" class="box"><div class="nm"></div><div class="drv"></div><div class="clk num"></div></div>
+<div id="stint" class="box">
+  <div class="hd"></div>
+  <div><span class="lbl">KESKMINE</span><span class="avg num">–</span><small> km/h</small></div>
+  <div><span class="lbl">TIPP</span><span class="top num">–</span><small> km/h</small></div>
+  <div class="prv num"></div>
+  <div class="tot num"></div>
+</div>
 <div id="lap" class="box">
   <div><span class="lbl">RING</span><span class="n num">–</span></div>
   <div class="cur num">–:––.–</div>
@@ -59,14 +72,16 @@
     return isFinite(v) && v >= lo && v <= hi ? v : def;
   }
   var cfg = {
-    team: q.get('team') || '',
+    team: q.has('team') ? q.get('team') : 'Opel Astra',
     car: q.get('car') || '',
     drivers: (q.get('drivers') || '').split(',').filter(Boolean).map(function (s) {
       var a = s.split('@'), hm = (a[1] || '0:0').split(':').map(Number);
       return { name: a[0].trim(), min: (hm[0] || 0) * 60 + (hm[1] || 0) };
     }).sort(function (a, b) { return a.min - b.min; }),
-    start: q.get('start'),
-    dur: num('dur', 0, 0, 48),
+    start: q.has('start') ? q.get('start') : '12:00',
+    dur: num('dur', 8, 0, 48),
+    laps: q.get('laps') === '1',
+    ig: q.has('ig') ? q.get('ig') : 'WTF.motorsport',
     minLap: num('minlap', 60, 10, 900),        // s; Mannergute short layout dry minimum is 1:27
     gate: num('gate', 25, 5, 80),              // m, lateral half-width of the timing line
     maxAcc: num('maxacc', 30, 5, 200),         // m, reject worse fixes
@@ -110,7 +125,7 @@
     return { x: (lon - origin.lon) * origin.k * 111320, y: (lat - origin.lat) * 110540 };
   }
 
-  function fresh() { return { v: 2, anchor: null, outline: null, laps: [], best: null, lastCross: null, armed: true, unc: false, origin: null }; }
+  function fresh() { return { v: 2, anchor: null, outline: null, laps: [], best: null, lastCross: null, armed: true, unc: false, origin: null, hours: {}, km: 0 }; }
   function valid(o) {
     return o && o.v === 2 && o.origin && isFinite(o.origin.lat) && isFinite(o.origin.lon) && Array.isArray(o.laps) &&
       (o.anchor == null || (isFinite(o.anchor.x) && isFinite(o.anchor.y) && isFinite(o.anchor.h))) &&
@@ -123,6 +138,8 @@
       var saved = JSON.parse(localStorage.getItem(cfg.key) || 'null');
       if (valid(saved)) {
         S = saved; origin = saved.origin;
+        if (!S.hours || typeof S.hours !== 'object') S.hours = {};
+        if (!isFinite(S.km)) S.km = 0;
         S.armed = false;                       // re-arm only after leaving the line area
         S.unc = S.lastCross != null;           // the lap in progress lost its continuity
       }
@@ -141,9 +158,9 @@
     }
   }
   applySf();
-  if (q.get('ig') && hidden.indexOf('ig') < 0) {
+  if (cfg.ig && hidden.indexOf('ig') < 0) {
     var igEl = document.getElementById('ig');
-    igEl.querySelector('span').textContent = '@' + q.get('ig').replace(/^@/, '').toUpperCase();
+    igEl.querySelector('span').textContent = '@' + cfg.ig.replace(/^@/, '').toUpperCase();
     igEl.classList.remove('hide');
   }
 
@@ -195,7 +212,8 @@
         p.h = d > 3 ? hdg(prev, p) : prev.h;
         if (v > 2) odo += d;
         p.d = odo;
-        if (S.anchor) checkGate(prev, p);
+        if (S.anchor && cfg.laps) checkGate(prev, p);
+        accumulate(prev, p, d, dt, v);
       }
     }
     if (p.d == null) p.d = odo;
@@ -282,6 +300,28 @@
     save();
   }
 
+  function raceStart(t) {
+    if (!cfg.start) return null;
+    var hm = cfg.start.split(':').map(Number), s0 = new Date(t); s0.setHours(hm[0] || 0, hm[1] || 0, 0, 0);
+    return s0.getTime();
+  }
+  var spdWin = [];
+  function accumulate(a, b, d, dt, v) {
+    var st = raceStart(b.t);
+    if (st == null || b.t < st || (cfg.dur && b.t > st + cfg.dur * 3600e3)) return;
+    var h = Math.floor((b.t - st) / 3600e3), H = S.hours[h] || (S.hours[h] = { d: 0, t: 0, max: 0 });
+    var kmh = v * 3.6;
+    if (kmh > 20) { H.d += d; H.t += dt; }                // track running only: pit stops excluded
+    spdWin.push(kmh); if (spdWin.length > 3) spdWin.shift();
+    if (spdWin.length === 3) {                           // median of 3 rejects single-fix spikes
+      var m = spdWin.slice().sort(function (x, y) { return x - y; })[1];
+      if (m > H.max && m < 300) H.max = m;
+    }
+    if (kmh > 2) S.km += d / 1000;
+    if (++accN % 10 === 0) save();
+  }
+  var accN = 0;
+
   function addLap(ms, unc) {
     var slow = unc || (S.best != null && ms > S.best * 1.5) || ms > 180000;
     S.laps.push({ ms: ms, slow: slow, unc: !!unc, ref: S.best });
@@ -319,7 +359,7 @@
       if (outlined) cx.closePath();
       cx.lineWidth = st[0]; cx.strokeStyle = st[1]; cx.stroke();
     });
-    if (S.anchor) {
+    if (S.anchor && cfg.laps) {
       var r = S.anchor.h * Math.PI / 180, px = Math.cos(r), py = Math.sin(r), X0 = X(S.anchor.x), Y0 = Y(S.anchor.y);
       cx.beginPath(); cx.moveTo(X0 + px * 12, Y0 + py * 12); cx.lineTo(X0 - px * 12, Y0 - py * 12);
       cx.lineWidth = 5; cx.strokeStyle = '#ffcc00'; cx.stroke();
@@ -353,6 +393,19 @@
     setText('#team .clk', clk);
     if (hidden.indexOf('team') < 0) $('#team').classList.toggle('hide', !name && !clk && !drv);
 
+    var st0 = raceStart(t), hIdx = st0 != null && t >= st0 ? Math.floor((t - st0) / 3600e3) : -1;
+    if (hIdx < 0) setText('#stint .hd', 'START ' + cfg.start);
+    else if (cfg.dur && hIdx >= cfg.dur) setText('#stint .hd', 'FINIŠ');
+    else {
+      var h0 = new Date(st0 + hIdx * 3600e3), h1 = new Date(st0 + (hIdx + 1) * 3600e3);
+      setText('#stint .hd', (hIdx + 1) + '. TUND  ' + h0.getHours() + '–' + h1.getHours());
+    }
+    var cur = S.hours[Math.min(hIdx, cfg.dur ? cfg.dur - 1 : hIdx)] || null, prv = hIdx > 0 ? S.hours[hIdx - 1] : null;
+    setText('#stint .avg', cur && cur.t > 30 ? String(Math.round(cur.d / cur.t * 3.6)) : '–');
+    setText('#stint .top', cur && cur.max ? String(Math.round(cur.max)) : '–');
+    setText('#stint .prv', prv && prv.t > 30 ? 'eelmine tund: ' + Math.round(prv.d / prv.t * 3.6) + ' / ' + Math.round(prv.max) + ' km/h' : '');
+    setText('#stint .tot', S.km > 0.1 ? 'kokku ' + S.km.toFixed(1) + ' km' : '');
+
     var n = S.laps.length, last = n ? S.laps[n - 1] : null;
     setText('#lap .n', S.lastCross != null ? String(n + 1) : '–');
     setText('#lap .cur', S.lastCross != null ? fmt(t - S.lastCross) : '–:––.–');
@@ -380,7 +433,8 @@
                 : (lastAcc != null ? ' · GPS ebatäpne ±' + Math.round(lastAcc) + ' m' : ' · ootan GPS-i')) +
       (msg ? ' · ' + msg : '');
   }
-  setInterval(render, 200);
+  document.getElementById(cfg.laps ? 'stint' : 'lap').classList.add('hide');
+  setInterval(render, cfg.laps ? 200 : 1000);
 
   if (cfg.demo) { src = 'demo'; startDemo(); }
   else if (cfg.rtirl) {
