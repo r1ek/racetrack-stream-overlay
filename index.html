@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="et">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MM overlay</title>
+<style>
+  :root { --s: 1; --bg: rgba(0,0,0,.55); --fg: #fff; --acc: #ffcc00; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font-family: "Roboto Condensed", "Arial Narrow", Arial, sans-serif; color: var(--fg); }
+  .box { position: absolute; background: var(--bg); border-radius: calc(1.2vmin * var(--s));
+    padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 0 .4vmin #000; }
+  .num { font-variant-numeric: tabular-nums; font-family: "Roboto Mono", Menlo, Consolas, monospace; }
+  #team { top: 2vmin; left: 2vmin; font-size: calc(3.2vmin * var(--s)); line-height: 1.15; }
+  #team .drv { color: var(--acc); font-size: calc(2.8vmin * var(--s)); }
+  #team .clk { font-size: calc(2.4vmin * var(--s)); opacity: .85; }
+  #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.2; min-width: calc(30vmin * var(--s)); }
+  #lap .cur { font-size: calc(6.5vmin * var(--s)); font-weight: 700; }
+  #lap .lbl { opacity: .75; font-size: .8em; margin-right: .4em; }
+  #lap .best { color: #7CFC7C; }
+  #lap .dpos { color: #ff7070; } #lap .dneg { color: #7CFC7C; }
+  #spd { bottom: 2vmin; left: 2vmin; font-size: calc(10vmin * var(--s)); font-weight: 700; line-height: 1; }
+  #spd small { font-size: .35em; font-weight: 400; margin-left: .2em; }
+  #map { bottom: 2vmin; right: 2vmin; padding: calc(.8vmin * var(--s)); }
+  #map canvas { display: block; width: calc(30vmin * var(--s)); height: calc(30vmin * var(--s)); }
+  #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%);
+    font-size: calc(1.6vmin * var(--s)); opacity: .7; text-shadow: 0 0 .3vmin #000; white-space: nowrap; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<div id="team" class="box"><div class="nm"></div><div class="drv"></div><div class="clk num"></div></div>
+<div id="lap" class="box">
+  <div><span class="lbl">RING</span><span class="n num">–</span></div>
+  <div class="cur num">–:––.–</div>
+  <div><span class="lbl">EELMINE</span><span class="last num">–</span> <span class="delta num"></span></div>
+  <div><span class="lbl">PARIM</span><span class="best num">–</span></div>
+</div>
+<div id="spd" class="box num"><span class="v">–</span><small>km/h</small></div>
+<div id="map" class="box"><canvas width="300" height="300"></canvas></div>
+<div id="st" class="num"></div>
+
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const cfg = {
+    team: q.get('team') || '',
+    car: q.get('car') || '',
+    drivers: (q.get('drivers') || '').split(',').filter(Boolean).map(s => {
+      const [name, hm] = s.split('@'); const [h, m] = (hm || '0:0').split(':').map(Number);
+      return { name: name.trim(), min: h * 60 + (m || 0) };
+    }).sort((a, b) => a.min - b.min),
+    start: q.get('start'),
+    dur: parseFloat(q.get('dur') || '0'),
+    minLap: parseFloat(q.get('minlap') || '40'),
+    gate: parseFloat(q.get('gate') || '25'),
+    maxAcc: parseFloat(q.get('maxacc') || '30'),
+    rtirl: q.get('rtirl'),
+    demo: q.has('demo'),
+    speedup: parseFloat(q.get('speedup') || '1'),
+    sf: q.get('sf'),
+    key: 'mmov1:' + (q.get('session') || 'default'),
+  };
+  document.documentElement.style.setProperty('--s', q.get('scale') || '1');
+  const hidden = new Set((q.get('hide') || '').split(',').filter(Boolean));
+  hidden.forEach(id => document.getElementById(id)?.classList.add('hide'));
+
+  const t0real = Date.now();
+  const now = () => cfg.demo ? t0real + (Date.now() - t0real) * cfg.speedup : Date.now();
+
+  const $ = s => document.querySelector(s);
+  const fmt = ms => {
+    if (ms == null || !isFinite(ms)) return '–';
+    const t = Math.max(0, ms) / 1000, m = Math.floor(t / 60), s = t - m * 60;
+    return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+  };
+  const fmtHMS = ms => {
+    const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+    return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  };
+  const angDiff = (a, b) => { const d = Math.abs(((a - b) % 360 + 540) % 360 - 180); return d; };
+
+  // local metric projection around the first fix
+  let origin = null;
+  const proj = (lat, lon) => {
+    if (!origin) origin = { lat, lon, k: Math.cos(lat * Math.PI / 180) };
+    return { x: (lon - origin.lon) * origin.k * 111320, y: (lat - origin.lat) * 110540 };
+  };
+
+  // state (persisted so a WebView reload keeps laps)
+  let S = { anchor: null, outline: null, laps: [], best: null, lastCross: null, origin: null };
+  try {
+    if (q.has('reset')) localStorage.removeItem(cfg.key);
+    const saved = JSON.parse(localStorage.getItem(cfg.key) || 'null');
+    if (saved && saved.origin) { S = saved; origin = saved.origin; }
+  } catch (e) {}
+  const save = () => { try { S.origin = origin; localStorage.setItem(cfg.key, JSON.stringify(S)); } catch (e) {} };
+
+  if (cfg.sf && !S.anchor) {
+    const [la, lo, h] = cfg.sf.split(',').map(Number);
+    if (isFinite(la) && isFinite(lo) && isFinite(h)) { const p = proj(la, lo); S.anchor = { x: p.x, y: p.y, h }; }
+  }
+
+  let hist = [];            // recent moving points, for loop detection + trail
+  let prev = null;          // previous accepted point
+  let lastFix = null, lastAcc = null, speedKmh = null;
+
+  function onFix(f) {
+    // f: {lat, lon, t, speed (m/s|null), acc (m|null)}
+    lastFix = now(); lastAcc = f.acc;
+    if (f.acc != null && f.acc > cfg.maxAcc) { render(); return; }
+    let p = proj(f.lat, f.lon); p.t = f.t;
+    if (Math.hypot(p.x, p.y) > 2000) {   // saved state is from another place: start fresh
+      S = { anchor: null, outline: null, laps: [], best: null, lastCross: null, origin: null };
+      origin = null; hist = []; prev = null; p = proj(f.lat, f.lon); p.t = f.t; save();
+    }
+    let v = (f.speed != null && isFinite(f.speed) && f.speed >= 0) ? f.speed : null;
+    if (prev) {
+      const dx = p.x - prev.x, dy = p.y - prev.y, dt = (p.t - prev.t) / 1000, d = Math.hypot(dx, dy);
+      if (dt <= 0) return;
+      if (v == null) v = d / dt;
+      p.h = d > 2 ? (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360 : prev.h;
+      checkGate(prev, p);
+    }
+    speedKmh = v == null ? null : (speedKmh == null ? v * 3.6 : speedKmh * 0.4 + v * 3.6 * 0.6);
+    if (v != null && v > 5 && p.h != null) {
+      if (!S.anchor) learn(p);
+      hist.push(p);
+      const cutoff = p.t - 15 * 60 * 1000;
+      while (hist.length && hist[0].t < cutoff) hist.shift();
+    }
+    prev = p;
+    render();
+  }
+
+  // loop closure: back within 15 m of an earlier point, same direction, after >= minLap
+  function learn(p) {
+    let best = null, bi = -1;
+    for (let i = 0; i < hist.length; i++) {
+      const o = hist[i];
+      if (p.t - o.t < cfg.minLap * 1000) break;
+      const d = Math.hypot(p.x - o.x, p.y - o.y);
+      if (d < 15 && angDiff(p.h, o.h) < 50 && (!best || d < best.d)) { best = { d, o }; bi = i; }
+    }
+    if (!best) return;
+    const o = best.o;
+    S.anchor = { x: o.x, y: o.y, h: o.h };
+    S.outline = simplify(hist.slice(bi).concat([p]).map(a => [a.x, a.y]));
+    S.lastCross = o.t;
+    addLap(p.t - o.t);
+    S.lastCross = p.t;
+    save();
+  }
+
+  function checkGate(a, b) {
+    const A = S.anchor; if (!A) return;
+    const r = A.h * Math.PI / 180, ux = Math.sin(r), uy = Math.cos(r);
+    const sa = (a.x - A.x) * ux + (a.y - A.y) * uy, sb = (b.x - A.x) * ux + (b.y - A.y) * uy;
+    if (!(sa < 0 && sb >= 0) || sa < -100 || sb > 100) return;
+    const f = -sa / (sb - sa);
+    const lx = (a.x + (b.x - a.x) * f) - A.x, ly = (a.y + (b.y - a.y) * f) - A.y;
+    if (Math.abs(lx * uy - ly * ux) > cfg.gate) return;
+    const segH = (Math.atan2(b.x - a.x, b.y - a.y) * 180 / Math.PI + 360) % 360;
+    if (angDiff(segH, A.h) > 60) return;
+    const tc = a.t + (b.t - a.t) * f;
+    if (S.lastCross != null && tc - S.lastCross < cfg.minLap * 1000) return;
+    if (S.lastCross != null) {
+      addLap(tc - S.lastCross);
+      if (!S.outline || S.outline.length < 10) {
+        const pts = hist.filter(h => h.t >= S.lastCross).map(h => [h.x, h.y]);
+        if (pts.length > 10) S.outline = simplify(pts);
+      }
+    }
+    S.lastCross = tc;
+    save();
+  }
+
+  function addLap(ms) {
+    const pit = S.best != null && ms > S.best * 1.5;
+    S.laps.push({ ms, pit });
+    if (!pit && (S.best == null || ms < S.best)) S.best = ms;
+    if (S.laps.length > 1000) S.laps.shift();
+  }
+
+  function simplify(pts) {
+    const out = []; let last = null;
+    for (const p of pts) { if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 6) { out.push(p); last = p; } }
+    return out;
+  }
+
+  // rendering
+  const cv = $('#map canvas'), cx = cv.getContext('2d');
+  function drawMap() {
+    const w = cv.width, h = cv.height; cx.clearRect(0, 0, w, h);
+    const pts = (S.outline && S.outline.length > 10) ? S.outline : hist.map(a => [a.x, a.y]);
+    if (pts.length < 2) { cx.fillStyle = '#fff'; cx.font = '20px sans-serif'; cx.textAlign = 'center';
+      cx.fillText(lastFix ? 'raja õppimine…' : 'ootan GPS-i…', w / 2, h / 2); return; }
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    const pad = 18, sc = Math.min((w - 2 * pad) / Math.max(1, x1 - x0), (h - 2 * pad) / Math.max(1, y1 - y0));
+    const ox = (w - (x1 - x0) * sc) / 2, oy = (h - (y1 - y0) * sc) / 2;
+    const X = x => ox + (x - x0) * sc, Y = y => h - (oy + (y - y0) * sc);
+    cx.lineJoin = cx.lineCap = 'round';
+    for (const [lw, col] of [[10, 'rgba(0,0,0,.7)'], [5, '#fff']]) {
+      cx.beginPath(); pts.forEach(([x, y], i) => i ? cx.lineTo(X(x), Y(y)) : cx.moveTo(X(x), Y(y)));
+      if (S.outline && pts === S.outline) cx.closePath();
+      cx.lineWidth = lw; cx.strokeStyle = col; cx.stroke();
+    }
+    if (S.anchor) {
+      const r = S.anchor.h * Math.PI / 180, px = Math.cos(r), py = -Math.sin(r);
+      cx.beginPath(); cx.moveTo(X(S.anchor.x + px * 14), Y(S.anchor.y + py * 14)); cx.lineTo(X(S.anchor.x - px * 14), Y(S.anchor.y - py * 14));
+      cx.lineWidth = 4; cx.strokeStyle = '#ffcc00'; cx.stroke();
+    }
+    if (prev) { cx.beginPath(); cx.arc(X(prev.x), Y(prev.y), 9, 0, 7); cx.fillStyle = '#ff2a2a'; cx.fill();
+      cx.lineWidth = 3; cx.strokeStyle = '#fff'; cx.stroke(); }
+  }
+
+  function driverNow() {
+    if (!cfg.drivers.length) return '';
+    const d = new Date(now()), m = d.getHours() * 60 + d.getMinutes();
+    let cur = cfg.drivers[0];
+    for (const x of cfg.drivers) if (x.min <= m) cur = x;
+    return cur.name;
+  }
+
+  function render() {
+    const t = now();
+    $('#team .nm').textContent = [cfg.car && ('#' + cfg.car), cfg.team].filter(Boolean).join(' ');
+    $('#team .drv').textContent = driverNow() ? 'Roolis: ' + driverNow() : '';
+    let clk = '';
+    if (cfg.start) {
+      const [h, m] = cfg.start.split(':').map(Number), s = new Date(t); s.setHours(h, m || 0, 0, 0);
+      const el = t - s.getTime();
+      if (el >= 0) clk = fmtHMS(el) + (cfg.dur ? '  / jäänud ' + fmtHMS(cfg.dur * 3600e3 - el) : '');
+    }
+    $('#team .clk').textContent = clk;
+    if (!hidden.has('team')) $('#team').classList.toggle('hide', !$('#team .nm').textContent && !clk && !driverNow());
+
+    const n = S.laps.length;
+    $('#lap .n').textContent = S.lastCross != null ? String(n + 1) : '–';
+    $('#lap .cur').textContent = S.lastCross != null ? fmt(t - S.lastCross) : '–:––.–';
+    const last = n ? S.laps[n - 1] : null;
+    $('#lap .last').textContent = last ? fmt(last.ms) + (last.pit ? ' (boks)' : '') : '–';
+    const dl = $('#lap .delta');
+    if (last && !last.pit && S.best != null && n > 1) {
+      const d = (last.ms - S.best) / 1000; dl.textContent = (d > 0 ? '+' : '') + d.toFixed(1);
+      dl.className = 'delta num ' + (d > 0 ? 'dpos' : 'dneg');
+    } else dl.textContent = '';
+    $('#lap .best').textContent = fmt(S.best);
+
+    $('#spd .v').textContent = speedKmh == null ? '–' : Math.round(speedKmh);
+    drawMap();
+    const age = lastFix ? (t - lastFix) / 1000 : null;
+    $('#st').textContent = (cfg.demo ? 'DEMO · ' : '') + (src || '') +
+      (lastFix ? ' · GPS ' + (lastAcc != null ? '±' + Math.round(lastAcc) + ' m' : 'ok') + (age > 5 ? ' · signaal ' + Math.round(age) + ' s vana' : '') : ' · ootan GPS-i') + (errMsg ? ' · ' + errMsg : '');
+  }
+  setInterval(render, 100);
+
+  // sources
+  let src = '', errMsg = '';
+  if (cfg.demo) { src = 'demo'; startDemo(); }
+  else if (cfg.rtirl) {
+    src = 'RealtimeIRL';
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@rtirl/api@1.2.5/lib/index.min.js';
+    s.onload = () => {
+      let spd = null;
+      const api = window.RealtimeIRL.forPullKey(cfg.rtirl, { forceWebSockets: true });
+      api.addSpeedListener(v => { spd = v; });
+      api.addLocationListener(l => { if (l && isFinite(l.latitude)) onFix({ lat: l.latitude, lon: l.longitude, t: now(), speed: spd, acc: null }); });
+    };
+    s.onerror = () => { errMsg = 'RealtimeIRL skript ei laadinud'; };
+    document.head.appendChild(s);
+  } else if ('geolocation' in navigator) {
+    src = 'telefoni GPS';
+    navigator.geolocation.watchPosition(
+      p => { errMsg = ''; onFix({ lat: p.coords.latitude, lon: p.coords.longitude, t: p.timestamp || now(), speed: p.coords.speed, acc: p.coords.accuracy }); },
+      e => { errMsg = 'GPS viga: ' + (e.code === 1 ? 'luba puudub' : e.message || e.code); },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+  } else { errMsg = 'brauseris pole GPS-i'; }
+
+  // demo: pit-lane exit then laps of a synthetic ~2 km circuit at 1 Hz with noise
+  function startDemo() {
+    const lat0 = 58.4005, lon0 = 24.4505, k = Math.cos(lat0 * Math.PI / 180);
+    const shape = th => { const r = 320 + 90 * Math.sin(3 * th) + 40 * Math.cos(5 * th); return [r * Math.cos(th) * 1.3, r * Math.sin(th)]; };
+    let th = 0, pit = 12, tt = now();
+    setInterval(() => {
+      const dt = 1000;
+      tt += dt;
+      let x, y, v;
+      if (pit > 0) { const p = shape(0); x = p[0] - pit * 12; y = p[1] - 60 + pit * 3; v = 15; pit--; }
+      else {
+        const curv = Math.abs(Math.sin(3 * th)); v = 22 + 14 * (1 - curv) + (Math.random() - .5) * 2;
+        const p0 = shape(th), p1 = shape(th + 0.001), seg = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / 0.001;
+        th += v * (dt / 1000) / seg; [x, y] = shape(th);
+      }
+      x += (Math.random() - .5) * 4; y += (Math.random() - .5) * 4;
+      onFix({ lat: lat0 + y / 110540, lon: lon0 + x / (111320 * k), t: tt, speed: v, acc: 4 });
+    }, 1000 / cfg.speedup);
+  }
+})();
+</script>
+</body>
+</html>
