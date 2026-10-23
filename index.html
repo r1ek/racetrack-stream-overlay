@@ -16,7 +16,7 @@
     text-shadow: 0 1px 2px rgba(0,0,0,.85); }
   .num { font-variant-numeric: tabular-nums; }
   .lbl { color: var(--dim); font-weight: 600; letter-spacing: .08em; font-size: .72em; margin-right: .5em; }
-  #team { bottom: calc(2vmin + 6.4vmin * var(--s)); left: 2vmin; font-size: calc(2.8vmin * var(--s)); line-height: 1.1; font-weight: 600; letter-spacing: .03em; }
+  #team { top: 2vmin; left: 2vmin; font-size: calc(2.8vmin * var(--s)); line-height: 1.1; font-weight: 600; letter-spacing: .03em; }
   #team > div { white-space: nowrap; }
   #team .nm { color: var(--acc2); font-weight: 700; font-style: italic; margin-right: .5em; }
   #team .drv { color: var(--acc2); }
@@ -446,6 +446,20 @@
   }
   document.getElementById(cfg.laps ? 'stint' : 'lap').classList.add('hide');
   setInterval(render, cfg.laps ? 200 : 1000);
+
+  // self-update: when a newer build is published, save state and reload with a cache-busting param
+  var BUILD = '20261023205413';
+  function checkUpdate() {
+    if (BUILD.indexOf('__') === 0) return;               // unstamped local copy
+    fetch('version.json?t=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.build || j.build === BUILD) return;
+        save();
+        var u = new URLSearchParams(location.search); u.set('build', j.build);
+        location.replace(location.pathname + '?' + u.toString());
+      }).catch(function () {});
+  }
+  if (q.get('update') !== '0') setInterval(checkUpdate, 180000);
 
   if (cfg.demo) { src = 'demo'; startDemo(); }
   else if (cfg.rtirl) {
