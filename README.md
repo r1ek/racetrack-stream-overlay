@@ -23,7 +23,8 @@ Single static `index.html`, no build. Host on GitHub Pages and paste the URL int
 | `rtirl` | `rtirl=PULLKEY` | use RealtimeIRL instead of phone GPS |
 | `sf` | `sf=58.40,24.45,135` | fixed timing line lat,lon,heading° (skip learning) |
 | `minlap`, `gate`, `maxacc`, `maxgap` | `minlap=60` | min lap s (default 60), gate half-width m (25), max GPS accuracy m (30), max fix gap s (5) |
-| `scale`, `hide` | `scale=1.2&hide=team,map` | size, hide boxes (`team`,`lap`,`spd`,`map`) |
+| `ig` | `ig=WTF.motorsport` | Instagram icon + @HANDLE label |
+| `scale`, `hide` | `scale=1.2&hide=team,map` | size, hide boxes (`team`,`lap`,`spd`,`map`,`ig`) |
 | `demo`, `speedup` | `demo=1&speedup=20` | simulated laps for testing |
 
 Lap times are GPS-based (±0.5–1 s at 1 Hz), not official timing.
