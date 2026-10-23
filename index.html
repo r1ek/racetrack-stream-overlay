@@ -31,7 +31,8 @@
   #map { bottom: 2vmin; right: 2vmin; padding: calc(.8vmin * var(--s)); }
   #map canvas { display: block; width: calc(30vmin * var(--s)); height: calc(30vmin * var(--s)); }
   #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.5);
-    padding: 0 1vmin; border-radius: .6vmin; font-size: calc(1.8vmin * var(--s)); white-space: nowrap; }
+    padding: 0 1vmin; border-radius: .6vmin; font-size: calc(1.8vmin * var(--s)); max-width: 50vw; text-align: center; }
+  #lap.stale .cur { opacity: .4; }
   #st.err { color: #ff6060; font-size: calc(2.6vmin * var(--s)); }
   .hide { display: none !important; }
 </style>
@@ -149,24 +150,29 @@
   var hist = [];           // recent moving points {x,y,t,h,d}
   var prev = null;         // last accepted point
   var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0, pending = null, jumps = 0;
-  var offs = [], baseOff = 0;
+  var calib = [], clockOff = null, histBreak = true;
 
   function onFix(f) {
     if (f.acc != null && f.acc > cfg.maxAcc) { lastAcc = f.acc; return; }
-    // map the measurement time onto the device clock; the freshest fixes have the smallest offset
+    // measurement time on the device clock; a constant offset is calibrated once (only if the
+    // source clock is clearly off), so lap durations never change and old fixes stay old
     var t = now();
     if (isFinite(f.t)) {
-      var off = now() - f.t;
-      offs.push(off); if (offs.length > 30) offs.shift();
-      baseOff = Math.min.apply(null, offs);
-      if (off - baseOff > 3000) return;                  // delayed/stale measurement
-      t = f.t + baseOff;
+      if (clockOff == null) {
+        calib.push(now() - f.t);
+        if (calib.length < 5) return;
+        var m = calib.slice().sort(function (a, b) { return a - b; })[2];
+        clockOff = Math.abs(m) > 2000 ? m : 0;
+      }
+      t = f.t + clockOff;
+      var age = now() - t;
+      if (age > 3000 || age < -2000) return;            // stale or from the future
     }
     if (prev && t <= prev.t) return;                     // non-monotonic
     var p = proj(f.lat, f.lon);
     if (Math.hypot(p.x, p.y) > 2000) {                 // far from saved origin: another place?
       if (++farCount < 5) return;
-      S = fresh(); origin = null; hist = []; prev = null; odo = 0; farCount = 0; pending = null; offs = [];
+      S = fresh(); origin = null; hist = []; prev = null; odo = 0; farCount = 0; pending = null;
       p = proj(f.lat, f.lon); applySf(); save();
     } else farCount = 0;
     p.t = t;
@@ -174,13 +180,15 @@
     if (prev) {
       var dt = (p.t - prev.t) / 1000, d = dist(p, prev);
       if (dt < 0.3) return;                              // duplicate / burst
-      if (d / dt > 90) { if (++jumps < 3) return; prev = null; }   // outlier; 3 in a row = prev was the bad one
+      if (d / dt > 90) {                                 // outlier; 3 in a row = prev was the bad one
+        if (++jumps < 3) return;
+        prev = null; pending = null; jumps = 0; histBreak = true;
+        if (S.anchor) S.unc = true; else hist = [];
+      }
       else jumps = 0;
       if (!prev) { /* fall through: restart continuity at p */ }
       else if (dt > cfg.maxGap) {
-        // timing depends only on the line crossings: a gap matters near the line or when long
-        if (!S.anchor || dt > 30 || dist(prev, S.anchor) < 300 || dist(p, S.anchor) < 300) S.unc = true;
-        prev = null; pending = null;
+        S.unc = true; prev = null; pending = null; histBreak = true;
         if (!S.anchor) hist = [];                        // never learn across an unobserved stretch
       } else {
         if (v == null) v = d / dt;
@@ -196,11 +204,13 @@
     var kmh = v == null ? null : v * 3.6;
     speedKmh = kmh == null ? null : (speedKmh == null ? kmh : speedKmh * 0.4 + kmh * 0.6);
     if (v != null && v > 5 && p.h != null) {
+      p.brk = histBreak; histBreak = false;              // segment to this point was not fully observed
       hist.push(p);
       if (!S.anchor) learn(p);
       var cutoff = p.t - 15 * 60 * 1000;
       while (hist.length && hist[0].t < cutoff) hist.shift();
     }
+    if (!(v != null && v > 5)) histBreak = true;
     if (S.anchor && !S.armed && dist(p, S.anchor) > 150) { S.armed = true; save(); }
     prev = p;
     mapDirty = true;
@@ -212,6 +222,7 @@
     if (hist.length < 3 || p.h == null) return;
     for (var i = hist.length - 3; i >= 0; i--) {
       var a = hist[i], b = hist[i + 1];
+      if (b.brk) continue;
       if (p.t - b.t < cfg.minLap * 1000 || p.d - b.d < 600) continue;
       var sx = b.x - a.x, sy = b.y - a.y, L2 = sx * sx + sy * sy;
       if (L2 < 1) continue;
@@ -254,8 +265,9 @@
     if (P.s < -10 || p.t - pending.t > 60000) { pending = null; return; }   // backed off / never completed
     if (P.s < 20 || Math.abs(P.l) > cfg.gate * 2) return;
     var ok = angDiff(hdg(pending, p), S.anchor.h) <= 60;
+    var slowConfirm = p.t - pending.t > 8000;            // lingered at the line: crossing time unreliable
     var tc = pending.tc; pending = null;
-    if (ok) commit(tc);
+    if (ok) { if (slowConfirm) S.unc = true; commit(tc); }
   }
   function commit(tc) {
     if (S.lastCross != null && tc - S.lastCross < cfg.minLap * 1000) return;
@@ -313,8 +325,9 @@
       cx.lineWidth = 5; cx.strokeStyle = '#ffcc00'; cx.stroke();
     }
     if (prev) {
+      cx.globalAlpha = lastStale ? 0.35 : 1;
       cx.beginPath(); cx.arc(X(prev.x), Y(prev.y), 9, 0, 7); cx.fillStyle = '#ff2a2a'; cx.fill();
-      cx.lineWidth = 3; cx.strokeStyle = '#fff'; cx.stroke();
+      cx.lineWidth = 3; cx.strokeStyle = '#fff'; cx.stroke(); cx.globalAlpha = 1;
     }
   }
 
@@ -325,7 +338,7 @@
     return cur.name;
   }
 
-  var src = '', errMsg = '';
+  var src = '', errMsg = '', lastStale = false;
   function render() {
     var t = now();
     var name = [cfg.car && ('#' + cfg.car), cfg.team].filter(Boolean).join(' ');
@@ -355,6 +368,8 @@
     var age = lastGood ? (t - lastGood) / 1000 : null, stale = age == null || age > 4;
     setText('#spd .v', (speedKmh == null || stale) ? '–' : String(Math.round(speedKmh < 3 ? 0 : speedKmh)));
     $('#spd').classList.toggle('stale', lastGood != null && stale);
+    $('#lap').classList.toggle('stale', lastGood != null && stale);
+    if (stale !== lastStale) { lastStale = stale; mapDirty = true; }
     if (mapDirty) { drawMap(); mapDirty = false; }
 
     var msg = errMsg || saveErr;
