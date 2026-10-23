@@ -425,13 +425,11 @@
     if (stale !== lastStale) { lastStale = stale; mapDirty = true; }
     if (mapDirty) { drawMap(); mapDirty = false; }
 
-    var msg = errMsg || saveErr;
-    var stEl = $('#st');
-    stEl.className = 'num' + (msg || (lastGood && stale) ? ' err' : '');
-    stEl.textContent = (cfg.demo ? 'DEMO · ' : '') + src +
-      (lastGood ? (stale ? ' · GPS kadunud ' + Math.round(age) + ' s' : ' · GPS ' + (lastAcc != null ? '±' + Math.round(lastAcc) + ' m' : 'ok'))
-                : (lastAcc != null ? ' · GPS ebatäpne ±' + Math.round(lastAcc) + ' m' : ' · ootan GPS-i')) +
-      (msg ? ' · ' + msg : '');
+    // bottom line only for setup errors (GPS permission/source); GPS loss is shown in the speed box
+    var stEl = $('#st'), msg = errMsg;
+    if (cfg.demo && !msg) msg = 'DEMO';
+    stEl.className = msg ? 'num err' : 'num hide';
+    if (stEl.textContent !== msg) stEl.textContent = msg;
   }
   document.getElementById(cfg.laps ? 'stint' : 'lap').classList.add('hide');
   setInterval(render, cfg.laps ? 200 : 1000);
