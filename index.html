@@ -11,8 +11,8 @@
   .box { position: absolute; background: var(--bg); border-radius: calc(1.2vmin * var(--s));
     padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 0 .4vmin #000; }
   .num { font-variant-numeric: tabular-nums; font-family: "Roboto Mono", Menlo, Consolas, monospace; }
-  #team { top: 2vmin; left: 2vmin; max-width: 42vw; font-size: calc(3.2vmin * var(--s)); line-height: 1.15;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #team { top: 2vmin; left: 2vmin; max-width: 42vw; font-size: calc(3.2vmin * var(--s)); line-height: 1.15; }
+  #team > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #team .drv { color: var(--acc); font-size: calc(2.8vmin * var(--s)); }
   #team .clk { font-size: calc(2.4vmin * var(--s)); opacity: .85; }
   #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.2; min-width: calc(30vmin * var(--s)); }
@@ -83,7 +83,9 @@
     return Date.now();
   }
 
-  function $(s) { return document.querySelector(s); }
+  var elCache = {};
+  function $(s) { return elCache[s] || (elCache[s] = document.querySelector(s)); }
+  function setText(s, v) { var e = $(s); if (e.textContent !== v) e.textContent = v; }
   function fmt(ms) {
     if (ms == null || !isFinite(ms)) return '–';
     var d = Math.round(Math.max(0, ms) / 100), m = Math.floor(d / 600), s = (d % 600) / 10;
@@ -114,7 +116,11 @@
     try {
       if (q.get('reset') === '1') localStorage.removeItem(cfg.key);
       var saved = JSON.parse(localStorage.getItem(cfg.key) || 'null');
-      if (valid(saved)) { S = saved; origin = saved.origin; }
+      if (valid(saved)) {
+        S = saved; origin = saved.origin;
+        S.armed = false;                       // re-arm only after leaving the line area
+        S.unc = S.lastCross != null;           // the lap in progress lost its continuity
+      }
     } catch (e) { saveErr = 'salvestus ei tööta'; }
   }
   function save() {
@@ -133,16 +139,25 @@
 
   var hist = [];           // recent moving points {x,y,t,h,d}
   var prev = null;         // last accepted point
-  var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0;
+  var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0, pending = null;
+  var offs = [], baseOff = 0;
 
   function onFix(f) {
     if (f.acc != null && f.acc > cfg.maxAcc) { lastAcc = f.acc; return; }
-    var t = f.t;
-    if (!isFinite(t) || Math.abs(t - now()) > 3000) t = now();   // guard against device/GPS clock skew
+    // map the measurement time onto the device clock; the freshest fixes have the smallest offset
+    var t = now();
+    if (isFinite(f.t)) {
+      var off = now() - f.t;
+      offs.push(off); if (offs.length > 30) offs.shift();
+      baseOff = Math.min.apply(null, offs);
+      if (off - baseOff > 3000) return;                  // delayed/stale measurement
+      t = f.t + baseOff;
+    }
+    if (prev && t <= prev.t) return;                     // non-monotonic
     var p = proj(f.lat, f.lon);
     if (Math.hypot(p.x, p.y) > 2000) {                 // far from saved origin: another place?
       if (++farCount < 5) return;
-      S = fresh(); origin = null; hist = []; prev = null; odo = 0; farCount = 0;
+      S = fresh(); origin = null; hist = []; prev = null; odo = 0; farCount = 0; pending = null; offs = [];
       p = proj(f.lat, f.lon); applySf(); save();
     } else farCount = 0;
     p.t = t;
@@ -151,8 +166,10 @@
       var dt = (p.t - prev.t) / 1000, d = dist(p, prev);
       if (dt < 0.3) return;                              // duplicate / burst
       if (d / dt > 90) return;                           // >320 km/h jump: outlier
-      if (dt > cfg.maxGap) { S.unc = true; prev = null; }
-      else {
+      if (dt > cfg.maxGap) {
+        S.unc = true; prev = null; pending = null;
+        if (!S.anchor) hist = [];                        // never learn across an unobserved stretch
+      } else {
         if (v == null) v = d / dt;
         p.h = d > 3 ? hdg(prev, p) : prev.h;
         odo += d; p.d = odo;
@@ -160,6 +177,7 @@
       }
     }
     if (p.d == null) p.d = odo;
+    if (S.anchor && pending) confirm(p);
     lastGood = now(); lastAcc = f.acc;
     var kmh = v == null ? null : v * 3.6;
     speedKmh = kmh == null ? null : (speedKmh == null ? kmh : speedKmh * 0.4 + kmh * 0.6);
@@ -169,7 +187,7 @@
       var cutoff = p.t - 15 * 60 * 1000;
       while (hist.length && hist[0].t < cutoff) hist.shift();
     }
-    if (S.anchor && !S.armed && dist(p, S.anchor) > 150) S.armed = true;
+    if (S.anchor && !S.armed && dist(p, S.anchor) > 150) { S.armed = true; save(); }
     prev = p;
     mapDirty = true;
   }
@@ -193,26 +211,39 @@
       if (!left) continue;
       S.anchor = { x: c.x, y: c.y, h: h };
       S.outline = simplify(hist.slice(i + 1).map(function (o) { return [o.x, o.y]; }));
-      S.armed = true; S.lastCross = null; S.unc = false;
+      S.armed = true; S.lastCross = null; S.unc = false; pending = null;
       if (prev) checkGate(prev, p);                     // timing starts at the first real crossing
       save();
       return;
     }
   }
 
+  // Two stages: a sign change across the line (with lateral check) becomes a pending crossing with
+  // its interpolated time; it is committed only once the car is 20 m past the line. GPS jitter around
+  // a parked car never gets 20 m past, while slow real crossings still count.
+  function along(p) {
+    var A = S.anchor, r = A.h * Math.PI / 180, ux = Math.sin(r), uy = Math.cos(r);
+    var dx = p.x - A.x, dy = p.y - A.y;
+    return { s: dx * ux + dy * uy, l: dx * uy - dy * ux };
+  }
   function checkGate(a, b) {
-    var A = S.anchor;
-    if (!A || !S.armed) return;
-    var r = A.h * Math.PI / 180, ux = Math.sin(r), uy = Math.cos(r);
-    var sa = (a.x - A.x) * ux + (a.y - A.y) * uy, sb = (b.x - A.x) * ux + (b.y - A.y) * uy;
-    if (!(sa < 0 && sb >= 0) || sa < -250 || sb > 250) return;
-    var segLen = dist(a, b), dt = (b.t - a.t) / 1000;
-    if (segLen < 3 || segLen / dt < 5) return;          // not genuinely moving through
-    if (angDiff(hdg(a, b), A.h) > 60) return;
-    var f = -sa / (sb - sa);
-    var lx = a.x + (b.x - a.x) * f - A.x, ly = a.y + (b.y - a.y) * f - A.y;
-    if (Math.abs(lx * uy - ly * ux) > cfg.gate) return;
-    var tc = a.t + (b.t - a.t) * f;
+    if (!S.anchor || !S.armed || pending) return;
+    var A1 = along(a), B1 = along(b);
+    if (!(A1.s < 0 && B1.s >= 0) || A1.s < -250 || B1.s > 250) return;
+    var f = -A1.s / (B1.s - A1.s);
+    if (Math.abs(A1.l + (B1.l - A1.l) * f) > cfg.gate) return;
+    pending = { tc: a.t + (b.t - a.t) * f, t: b.t, x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    confirm(b);
+  }
+  function confirm(p) {
+    var P = along(p);
+    if (P.s < -10 || p.t - pending.t > 60000) { pending = null; return; }   // backed off / never completed
+    if (P.s < 20 || Math.abs(P.l) > cfg.gate * 2) return;
+    var ok = angDiff(hdg(pending, p), S.anchor.h) <= 60;
+    var tc = pending.tc; pending = null;
+    if (ok) commit(tc);
+  }
+  function commit(tc) {
     if (S.lastCross != null && tc - S.lastCross < cfg.minLap * 1000) return;
     if (S.lastCross != null) {
       addLap(tc - S.lastCross, S.unc);
@@ -290,24 +321,24 @@
       var el = t - s.getTime();
       if (el >= 0 && (!cfg.dur || el < cfg.dur * 3600e3 + 3600e3)) clk = fmtHMS(el) + (cfg.dur ? '  / jäänud ' + fmtHMS(cfg.dur * 3600e3 - el) : '');
     }
-    $('#team .nm').textContent = name;
-    $('#team .drv').textContent = drv ? 'Roolis: ' + drv : '';
-    $('#team .clk').textContent = clk;
+    setText('#team .nm', name);
+    setText('#team .drv', drv ? 'Roolis: ' + drv : '');
+    setText('#team .clk', clk);
     if (hidden.indexOf('team') < 0) $('#team').classList.toggle('hide', !name && !clk && !drv);
 
     var n = S.laps.length, last = n ? S.laps[n - 1] : null;
-    $('#lap .n').textContent = S.lastCross != null ? String(n + 1) : '–';
-    $('#lap .cur').textContent = S.lastCross != null ? fmt(t - S.lastCross) : '–:––.–';
-    $('#lap .last').textContent = last ? fmt(last.ms) + (last.unc ? ' (?)' : last.slow ? ' (boks/aegl.)' : '') : '–';
+    setText('#lap .n', S.lastCross != null ? String(n + 1) : '–');
+    setText('#lap .cur', S.lastCross != null ? fmt(t - S.lastCross) : '–:––.–');
+    setText('#lap .last', last ? fmt(last.ms) + (last.unc ? ' (?)' : last.slow ? ' (boks/aegl.)' : '') : '–');
     var dl = $('#lap .delta');
     if (last && !last.slow && last.ref != null) {
       var dd = (last.ms - last.ref) / 1000; dl.textContent = (dd > 0 ? '+' : '') + dd.toFixed(1);
       dl.className = 'delta num ' + (dd > 0 ? 'dpos' : 'dneg');
     } else dl.textContent = '';
-    $('#lap .best').textContent = fmt(S.best);
+    setText('#lap .best', fmt(S.best));
 
     var age = lastGood ? (t - lastGood) / 1000 : null, stale = age == null || age > 4;
-    $('#spd .v').textContent = (speedKmh == null || stale) ? '–' : String(Math.round(speedKmh < 3 ? 0 : speedKmh));
+    setText('#spd .v', (speedKmh == null || stale) ? '–' : String(Math.round(speedKmh < 3 ? 0 : speedKmh)));
     $('#spd').classList.toggle('stale', lastGood != null && stale);
     if (mapDirty) { drawMap(); mapDirty = false; }
 
@@ -328,14 +359,16 @@
     sc.src = 'https://cdn.jsdelivr.net/npm/@rtirl/api@1.2.5/lib/index.min.js';
     sc.onload = function () {
       try {
-        var spd = null, lastKey = '';
+        var lastAt = null;
         var api = window.RealtimeIRL.forPullKey(cfg.rtirl, { forceWebSockets: true });
-        api.addSpeedListener(function (v) { spd = v; });
-        api.addLocationListener(function (l) {
-          if (!l || !isFinite(l.latitude)) return;
-          var k = l.latitude + ',' + l.longitude; if (k === lastKey) return; lastKey = k;
+        api.addListener(function (r) {                  // whole record: location, speed, accuracy, reportedAt
+          if (!r || !r.location || !isFinite(r.location.latitude)) return;
+          if (r.reportedAt != null && r.reportedAt === lastAt) return;
+          lastAt = r.reportedAt;
           errMsg = '';
-          onFix({ lat: l.latitude, lon: l.longitude, t: now(), speed: spd, acc: null });
+          onFix({ lat: r.location.latitude, lon: r.location.longitude,
+            t: isFinite(r.reportedAt) ? r.reportedAt : NaN,
+            speed: isFinite(r.speed) ? r.speed : null, acc: isFinite(r.accuracy) ? r.accuracy : null });
         });
       } catch (e) { errMsg = 'RealtimeIRL viga'; }
     };
