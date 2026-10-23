@@ -11,7 +11,8 @@
   .box { position: absolute; background: var(--bg); border-radius: calc(1.2vmin * var(--s));
     padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 0 .4vmin #000; }
   .num { font-variant-numeric: tabular-nums; font-family: "Roboto Mono", Menlo, Consolas, monospace; }
-  #team { top: 2vmin; left: 2vmin; font-size: calc(3.2vmin * var(--s)); line-height: 1.15; }
+  #team { top: 2vmin; left: 2vmin; max-width: 42vw; font-size: calc(3.2vmin * var(--s)); line-height: 1.15;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #team .drv { color: var(--acc); font-size: calc(2.8vmin * var(--s)); }
   #team .clk { font-size: calc(2.4vmin * var(--s)); opacity: .85; }
   #lap { top: 2vmin; right: 2vmin; text-align: right; font-size: calc(3vmin * var(--s)); line-height: 1.2; min-width: calc(30vmin * var(--s)); }
@@ -21,10 +22,14 @@
   #lap .dpos { color: #ff7070; } #lap .dneg { color: #7CFC7C; }
   #spd { bottom: 2vmin; left: 2vmin; font-size: calc(10vmin * var(--s)); font-weight: 700; line-height: 1; }
   #spd small { font-size: .35em; font-weight: 400; margin-left: .2em; }
+  #spd .warn { display: none; font-size: .3em; font-weight: 700; color: #ff5050; }
+  #spd.stale .warn { display: block; }
+  #spd.stale .v { opacity: .4; }
   #map { bottom: 2vmin; right: 2vmin; padding: calc(.8vmin * var(--s)); }
   #map canvas { display: block; width: calc(30vmin * var(--s)); height: calc(30vmin * var(--s)); }
-  #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%);
-    font-size: calc(1.6vmin * var(--s)); opacity: .7; text-shadow: 0 0 .3vmin #000; white-space: nowrap; }
+  #st { position: absolute; bottom: .4vmin; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.5);
+    padding: 0 1vmin; border-radius: .6vmin; font-size: calc(1.8vmin * var(--s)); white-space: nowrap; }
+  #st.err { color: #ff6060; font-size: calc(2.6vmin * var(--s)); }
   .hide { display: none !important; }
 </style>
 </head>
@@ -36,266 +41,331 @@
   <div><span class="lbl">EELMINE</span><span class="last num">–</span> <span class="delta num"></span></div>
   <div><span class="lbl">PARIM</span><span class="best num">–</span></div>
 </div>
-<div id="spd" class="box num"><span class="v">–</span><small>km/h</small></div>
+<div id="spd" class="box num"><span class="v">–</span><small>km/h</small><div class="warn">GPS KADUNUD</div></div>
 <div id="map" class="box"><canvas width="300" height="300"></canvas></div>
 <div id="st" class="num"></div>
 
 <script>
-(() => {
-  const q = new URLSearchParams(location.search);
-  const cfg = {
+(function () {
+  'use strict';
+  var q = new URLSearchParams(location.search);
+  function num(name, def, lo, hi) {
+    var v = parseFloat(q.get(name));
+    return isFinite(v) && v >= lo && v <= hi ? v : def;
+  }
+  var cfg = {
     team: q.get('team') || '',
     car: q.get('car') || '',
-    drivers: (q.get('drivers') || '').split(',').filter(Boolean).map(s => {
-      const [name, hm] = s.split('@'); const [h, m] = (hm || '0:0').split(':').map(Number);
-      return { name: name.trim(), min: h * 60 + (m || 0) };
-    }).sort((a, b) => a.min - b.min),
+    drivers: (q.get('drivers') || '').split(',').filter(Boolean).map(function (s) {
+      var a = s.split('@'), hm = (a[1] || '0:0').split(':').map(Number);
+      return { name: a[0].trim(), min: (hm[0] || 0) * 60 + (hm[1] || 0) };
+    }).sort(function (a, b) { return a.min - b.min; }),
     start: q.get('start'),
-    dur: parseFloat(q.get('dur') || '0'),
-    minLap: parseFloat(q.get('minlap') || '40'),
-    gate: parseFloat(q.get('gate') || '25'),
-    maxAcc: parseFloat(q.get('maxacc') || '30'),
+    dur: num('dur', 0, 0, 48),
+    minLap: num('minlap', 60, 10, 900),        // s; Mannergute short layout dry minimum is 1:27
+    gate: num('gate', 25, 5, 80),              // m, lateral half-width of the timing line
+    maxAcc: num('maxacc', 30, 5, 200),         // m, reject worse fixes
+    maxGap: num('maxgap', 5, 1, 60),           // s, longer gaps break continuity
     rtirl: q.get('rtirl'),
     demo: q.has('demo'),
-    speedup: parseFloat(q.get('speedup') || '1'),
+    speedup: num('speedup', 1, 1, 100),
     sf: q.get('sf'),
-    key: 'mmov1:' + (q.get('session') || 'default'),
   };
-  document.documentElement.style.setProperty('--s', q.get('scale') || '1');
-  const hidden = new Set((q.get('hide') || '').split(',').filter(Boolean));
-  hidden.forEach(id => document.getElementById(id)?.classList.add('hide'));
+  cfg.key = 'mmov2:' + (cfg.demo ? 'demo:' : 'live:') + (q.get('session') || 'default');
+  document.documentElement.style.setProperty('--s', String(num('scale', 1, 0.3, 4)));
+  var hidden = (q.get('hide') || '').split(',').filter(Boolean);
+  hidden.forEach(function (id) { var el = document.getElementById(id); if (el) el.classList.add('hide'); });
 
-  const t0real = Date.now();
-  const now = () => cfg.demo ? t0real + (Date.now() - t0real) * cfg.speedup : Date.now();
-
-  const $ = s => document.querySelector(s);
-  const fmt = ms => {
-    if (ms == null || !isFinite(ms)) return '–';
-    const t = Math.max(0, ms) / 1000, m = Math.floor(t / 60), s = t - m * 60;
-    return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
-  };
-  const fmtHMS = ms => {
-    const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
-    return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-  };
-  const angDiff = (a, b) => { const d = Math.abs(((a - b) % 360 + 540) % 360 - 180); return d; };
-
-  // local metric projection around the first fix
-  let origin = null;
-  const proj = (lat, lon) => {
-    if (!origin) origin = { lat, lon, k: Math.cos(lat * Math.PI / 180) };
-    return { x: (lon - origin.lon) * origin.k * 111320, y: (lat - origin.lat) * 110540 };
-  };
-
-  // state (persisted so a WebView reload keeps laps)
-  let S = { anchor: null, outline: null, laps: [], best: null, lastCross: null, origin: null };
-  try {
-    if (q.has('reset')) localStorage.removeItem(cfg.key);
-    const saved = JSON.parse(localStorage.getItem(cfg.key) || 'null');
-    if (saved && saved.origin) { S = saved; origin = saved.origin; }
-  } catch (e) {}
-  const save = () => { try { S.origin = origin; localStorage.setItem(cfg.key, JSON.stringify(S)); } catch (e) {} };
-
-  if (cfg.sf && !S.anchor) {
-    const [la, lo, h] = cfg.sf.split(',').map(Number);
-    if (isFinite(la) && isFinite(lo) && isFinite(h)) { const p = proj(la, lo); S.anchor = { x: p.x, y: p.y, h }; }
+  // one clock for everything; in demo it is the simulation clock
+  var simT = null, simReal = 0;
+  function now() {
+    if (cfg.demo && simT != null) return simT + Math.min(1000, (Date.now() - simReal) * cfg.speedup);
+    return Date.now();
   }
 
-  let hist = [];            // recent moving points, for loop detection + trail
-  let prev = null;          // previous accepted point
-  let lastFix = null, lastAcc = null, speedKmh = null;
+  function $(s) { return document.querySelector(s); }
+  function fmt(ms) {
+    if (ms == null || !isFinite(ms)) return '–';
+    var d = Math.round(Math.max(0, ms) / 100), m = Math.floor(d / 600), s = (d % 600) / 10;
+    return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+  }
+  function fmtHMS(ms) {
+    var t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+    return h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+  function angDiff(a, b) { return Math.abs(((a - b) % 360 + 540) % 360 - 180); }
+  function hdg(a, b) { return (Math.atan2(b.x - a.x, b.y - a.y) * 180 / Math.PI + 360) % 360; }
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  var origin = null;
+  function proj(lat, lon) {
+    if (!origin) origin = { lat: lat, lon: lon, k: Math.cos(lat * Math.PI / 180) };
+    return { x: (lon - origin.lon) * origin.k * 111320, y: (lat - origin.lat) * 110540 };
+  }
+
+  function fresh() { return { v: 2, anchor: null, outline: null, laps: [], best: null, lastCross: null, armed: true, unc: false, origin: null }; }
+  function valid(o) {
+    return o && o.v === 2 && o.origin && isFinite(o.origin.lat) && isFinite(o.origin.lon) && Array.isArray(o.laps) &&
+      (o.anchor == null || (isFinite(o.anchor.x) && isFinite(o.anchor.y) && isFinite(o.anchor.h))) &&
+      (o.outline == null || Array.isArray(o.outline)) && (o.lastCross == null || (isFinite(o.lastCross) && o.lastCross <= Date.now() + 5000));
+  }
+  var S = fresh(), saveErr = '';
+  if (!cfg.demo) {
+    try {
+      if (q.get('reset') === '1') localStorage.removeItem(cfg.key);
+      var saved = JSON.parse(localStorage.getItem(cfg.key) || 'null');
+      if (valid(saved)) { S = saved; origin = saved.origin; }
+    } catch (e) { saveErr = 'salvestus ei tööta'; }
+  }
+  function save() {
+    if (cfg.demo) return;
+    try { S.origin = origin; localStorage.setItem(cfg.key, JSON.stringify(S)); saveErr = ''; }
+    catch (e) { saveErr = 'salvestus ei tööta'; }
+  }
+  function applySf() {
+    if (!cfg.sf || S.anchor) return;
+    var a = cfg.sf.split(',').map(Number);
+    if (a.length === 3 && Math.abs(a[0]) <= 90 && Math.abs(a[1]) <= 180 && isFinite(a[2])) {
+      var p = proj(a[0], a[1]); S.anchor = { x: p.x, y: p.y, h: a[2] }; S.armed = true;
+    }
+  }
+  applySf();
+
+  var hist = [];           // recent moving points {x,y,t,h,d}
+  var prev = null;         // last accepted point
+  var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0;
 
   function onFix(f) {
-    // f: {lat, lon, t, speed (m/s|null), acc (m|null)}
-    lastFix = now(); lastAcc = f.acc;
-    if (f.acc != null && f.acc > cfg.maxAcc) { render(); return; }
-    let p = proj(f.lat, f.lon); p.t = f.t;
-    if (Math.hypot(p.x, p.y) > 2000) {   // saved state is from another place: start fresh
-      S = { anchor: null, outline: null, laps: [], best: null, lastCross: null, origin: null };
-      origin = null; hist = []; prev = null; p = proj(f.lat, f.lon); p.t = f.t; save();
-    }
-    let v = (f.speed != null && isFinite(f.speed) && f.speed >= 0) ? f.speed : null;
+    if (f.acc != null && f.acc > cfg.maxAcc) { lastAcc = f.acc; return; }
+    var t = f.t;
+    if (!isFinite(t) || Math.abs(t - now()) > 3000) t = now();   // guard against device/GPS clock skew
+    var p = proj(f.lat, f.lon);
+    if (Math.hypot(p.x, p.y) > 2000) {                 // far from saved origin: another place?
+      if (++farCount < 5) return;
+      S = fresh(); origin = null; hist = []; prev = null; odo = 0; farCount = 0;
+      p = proj(f.lat, f.lon); applySf(); save();
+    } else farCount = 0;
+    p.t = t;
+    var v = (f.speed != null && isFinite(f.speed) && f.speed >= 0) ? f.speed : null;
     if (prev) {
-      const dx = p.x - prev.x, dy = p.y - prev.y, dt = (p.t - prev.t) / 1000, d = Math.hypot(dx, dy);
-      if (dt <= 0) return;
-      if (v == null) v = d / dt;
-      p.h = d > 2 ? (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360 : prev.h;
-      checkGate(prev, p);
+      var dt = (p.t - prev.t) / 1000, d = dist(p, prev);
+      if (dt < 0.3) return;                              // duplicate / burst
+      if (d / dt > 90) return;                           // >320 km/h jump: outlier
+      if (dt > cfg.maxGap) { S.unc = true; prev = null; }
+      else {
+        if (v == null) v = d / dt;
+        p.h = d > 3 ? hdg(prev, p) : prev.h;
+        odo += d; p.d = odo;
+        if (S.anchor) checkGate(prev, p);
+      }
     }
-    speedKmh = v == null ? null : (speedKmh == null ? v * 3.6 : speedKmh * 0.4 + v * 3.6 * 0.6);
+    if (p.d == null) p.d = odo;
+    lastGood = now(); lastAcc = f.acc;
+    var kmh = v == null ? null : v * 3.6;
+    speedKmh = kmh == null ? null : (speedKmh == null ? kmh : speedKmh * 0.4 + kmh * 0.6);
     if (v != null && v > 5 && p.h != null) {
-      if (!S.anchor) learn(p);
       hist.push(p);
-      const cutoff = p.t - 15 * 60 * 1000;
+      if (!S.anchor) learn(p);
+      var cutoff = p.t - 15 * 60 * 1000;
       while (hist.length && hist[0].t < cutoff) hist.shift();
     }
+    if (S.anchor && !S.armed && dist(p, S.anchor) > 150) S.armed = true;
     prev = p;
-    render();
+    mapDirty = true;
   }
 
-  // loop closure: back within 15 m of an earlier point, same direction, after >= minLap
+  // Loop closure against historical segments: the newest earlier pass within 15 m, same direction,
+  // at least minLap s and 600 m driven ago, having been >100 m away in between.
   function learn(p) {
-    let best = null, bi = -1;
-    for (let i = 0; i < hist.length; i++) {
-      const o = hist[i];
-      if (p.t - o.t < cfg.minLap * 1000) break;
-      const d = Math.hypot(p.x - o.x, p.y - o.y);
-      if (d < 15 && angDiff(p.h, o.h) < 50 && (!best || d < best.d)) { best = { d, o }; bi = i; }
+    if (hist.length < 3 || p.h == null) return;
+    for (var i = hist.length - 3; i >= 0; i--) {
+      var a = hist[i], b = hist[i + 1];
+      if (p.t - b.t < cfg.minLap * 1000 || p.d - b.d < 600) continue;
+      var sx = b.x - a.x, sy = b.y - a.y, L2 = sx * sx + sy * sy;
+      if (L2 < 1) continue;
+      var u = Math.max(0, Math.min(1, ((p.x - a.x) * sx + (p.y - a.y) * sy) / L2));
+      var c = { x: a.x + sx * u, y: a.y + sy * u };
+      if (dist(p, c) > 15) continue;
+      var h = hdg(a, b);
+      if (angDiff(p.h, h) > 45) continue;
+      var left = false;
+      for (var j = i + 1; j < hist.length; j++) if (dist(hist[j], c) > 100) { left = true; break; }
+      if (!left) continue;
+      S.anchor = { x: c.x, y: c.y, h: h };
+      S.outline = simplify(hist.slice(i + 1).map(function (o) { return [o.x, o.y]; }));
+      S.armed = true; S.lastCross = null; S.unc = false;
+      if (prev) checkGate(prev, p);                     // timing starts at the first real crossing
+      save();
+      return;
     }
-    if (!best) return;
-    const o = best.o;
-    S.anchor = { x: o.x, y: o.y, h: o.h };
-    S.outline = simplify(hist.slice(bi).concat([p]).map(a => [a.x, a.y]));
-    S.lastCross = o.t;
-    addLap(p.t - o.t);
-    S.lastCross = p.t;
-    save();
   }
 
   function checkGate(a, b) {
-    const A = S.anchor; if (!A) return;
-    const r = A.h * Math.PI / 180, ux = Math.sin(r), uy = Math.cos(r);
-    const sa = (a.x - A.x) * ux + (a.y - A.y) * uy, sb = (b.x - A.x) * ux + (b.y - A.y) * uy;
-    if (!(sa < 0 && sb >= 0) || sa < -100 || sb > 100) return;
-    const f = -sa / (sb - sa);
-    const lx = (a.x + (b.x - a.x) * f) - A.x, ly = (a.y + (b.y - a.y) * f) - A.y;
+    var A = S.anchor;
+    if (!A || !S.armed) return;
+    var r = A.h * Math.PI / 180, ux = Math.sin(r), uy = Math.cos(r);
+    var sa = (a.x - A.x) * ux + (a.y - A.y) * uy, sb = (b.x - A.x) * ux + (b.y - A.y) * uy;
+    if (!(sa < 0 && sb >= 0) || sa < -250 || sb > 250) return;
+    var segLen = dist(a, b), dt = (b.t - a.t) / 1000;
+    if (segLen < 3 || segLen / dt < 5) return;          // not genuinely moving through
+    if (angDiff(hdg(a, b), A.h) > 60) return;
+    var f = -sa / (sb - sa);
+    var lx = a.x + (b.x - a.x) * f - A.x, ly = a.y + (b.y - a.y) * f - A.y;
     if (Math.abs(lx * uy - ly * ux) > cfg.gate) return;
-    const segH = (Math.atan2(b.x - a.x, b.y - a.y) * 180 / Math.PI + 360) % 360;
-    if (angDiff(segH, A.h) > 60) return;
-    const tc = a.t + (b.t - a.t) * f;
+    var tc = a.t + (b.t - a.t) * f;
     if (S.lastCross != null && tc - S.lastCross < cfg.minLap * 1000) return;
     if (S.lastCross != null) {
-      addLap(tc - S.lastCross);
+      addLap(tc - S.lastCross, S.unc);
       if (!S.outline || S.outline.length < 10) {
-        const pts = hist.filter(h => h.t >= S.lastCross).map(h => [h.x, h.y]);
+        var pts = hist.filter(function (h) { return h.t >= S.lastCross; }).map(function (h) { return [h.x, h.y]; });
         if (pts.length > 10) S.outline = simplify(pts);
       }
     }
-    S.lastCross = tc;
+    S.lastCross = tc; S.armed = false; S.unc = false;
     save();
   }
 
-  function addLap(ms) {
-    const pit = S.best != null && ms > S.best * 1.5;
-    S.laps.push({ ms, pit });
-    if (!pit && (S.best == null || ms < S.best)) S.best = ms;
+  function addLap(ms, unc) {
+    var slow = unc || (S.best != null && ms > S.best * 1.5) || ms > 180000;
+    S.laps.push({ ms: ms, slow: slow, unc: !!unc, ref: S.best });
+    if (!slow && (S.best == null || ms < S.best)) S.best = ms;
     if (S.laps.length > 1000) S.laps.shift();
   }
 
   function simplify(pts) {
-    const out = []; let last = null;
-    for (const p of pts) { if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 6) { out.push(p); last = p; } }
+    var out = [], last = null;
+    pts.forEach(function (p) { if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > 6) { out.push(p); last = p; } });
     return out;
   }
 
-  // rendering
-  const cv = $('#map canvas'), cx = cv.getContext('2d');
+  // map: redrawn only when a fix arrives
+  var cv = $('#map canvas'), cx = cv.getContext('2d'), mapDirty = true;
   function drawMap() {
-    const w = cv.width, h = cv.height; cx.clearRect(0, 0, w, h);
-    const pts = (S.outline && S.outline.length > 10) ? S.outline : hist.map(a => [a.x, a.y]);
-    if (pts.length < 2) { cx.fillStyle = '#fff'; cx.font = '20px sans-serif'; cx.textAlign = 'center';
-      cx.fillText(lastFix ? 'raja õppimine…' : 'ootan GPS-i…', w / 2, h / 2); return; }
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const [x, y] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
-    const pad = 18, sc = Math.min((w - 2 * pad) / Math.max(1, x1 - x0), (h - 2 * pad) / Math.max(1, y1 - y0));
-    const ox = (w - (x1 - x0) * sc) / 2, oy = (h - (y1 - y0) * sc) / 2;
-    const X = x => ox + (x - x0) * sc, Y = y => h - (oy + (y - y0) * sc);
+    var w = cv.width, h = cv.height; cx.clearRect(0, 0, w, h);
+    var outlined = S.outline && S.outline.length > 10;
+    var pts = outlined ? S.outline : hist.map(function (a) { return [a.x, a.y]; });
+    if (pts.length < 2) {
+      cx.fillStyle = '#fff'; cx.font = '22px sans-serif'; cx.textAlign = 'center';
+      cx.fillText(lastGood ? 'raja õppimine…' : 'ootan GPS-i…', w / 2, h / 2); return;
+    }
+    var all = prev ? pts.concat([[prev.x, prev.y]]) : pts;
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    all.forEach(function (p) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); });
+    var pad = 18, sc = Math.min((w - 2 * pad) / Math.max(1, x1 - x0), (h - 2 * pad) / Math.max(1, y1 - y0));
+    var ox = (w - (x1 - x0) * sc) / 2, oy = (h - (y1 - y0) * sc) / 2;
+    function X(x) { return ox + (x - x0) * sc; }
+    function Y(y) { return h - (oy + (y - y0) * sc); }
     cx.lineJoin = cx.lineCap = 'round';
-    for (const [lw, col] of [[10, 'rgba(0,0,0,.7)'], [5, '#fff']]) {
-      cx.beginPath(); pts.forEach(([x, y], i) => i ? cx.lineTo(X(x), Y(y)) : cx.moveTo(X(x), Y(y)));
-      if (S.outline && pts === S.outline) cx.closePath();
-      cx.lineWidth = lw; cx.strokeStyle = col; cx.stroke();
-    }
+    [[10, 'rgba(0,0,0,.7)'], [5, '#fff']].forEach(function (st) {
+      cx.beginPath();
+      pts.forEach(function (p, i) { if (i) cx.lineTo(X(p[0]), Y(p[1])); else cx.moveTo(X(p[0]), Y(p[1])); });
+      if (outlined) cx.closePath();
+      cx.lineWidth = st[0]; cx.strokeStyle = st[1]; cx.stroke();
+    });
     if (S.anchor) {
-      const r = S.anchor.h * Math.PI / 180, px = Math.cos(r), py = -Math.sin(r);
-      cx.beginPath(); cx.moveTo(X(S.anchor.x + px * 14), Y(S.anchor.y + py * 14)); cx.lineTo(X(S.anchor.x - px * 14), Y(S.anchor.y - py * 14));
-      cx.lineWidth = 4; cx.strokeStyle = '#ffcc00'; cx.stroke();
+      var r = S.anchor.h * Math.PI / 180, px = Math.cos(r), py = Math.sin(r), X0 = X(S.anchor.x), Y0 = Y(S.anchor.y);
+      cx.beginPath(); cx.moveTo(X0 + px * 12, Y0 + py * 12); cx.lineTo(X0 - px * 12, Y0 - py * 12);
+      cx.lineWidth = 5; cx.strokeStyle = '#ffcc00'; cx.stroke();
     }
-    if (prev) { cx.beginPath(); cx.arc(X(prev.x), Y(prev.y), 9, 0, 7); cx.fillStyle = '#ff2a2a'; cx.fill();
-      cx.lineWidth = 3; cx.strokeStyle = '#fff'; cx.stroke(); }
+    if (prev) {
+      cx.beginPath(); cx.arc(X(prev.x), Y(prev.y), 9, 0, 7); cx.fillStyle = '#ff2a2a'; cx.fill();
+      cx.lineWidth = 3; cx.strokeStyle = '#fff'; cx.stroke();
+    }
   }
 
-  function driverNow() {
+  function driverNow(t) {
     if (!cfg.drivers.length) return '';
-    const d = new Date(now()), m = d.getHours() * 60 + d.getMinutes();
-    let cur = cfg.drivers[0];
-    for (const x of cfg.drivers) if (x.min <= m) cur = x;
+    var d = new Date(t), m = d.getHours() * 60 + d.getMinutes(), cur = cfg.drivers[0];
+    cfg.drivers.forEach(function (x) { if (x.min <= m) cur = x; });
     return cur.name;
   }
 
+  var src = '', errMsg = '';
   function render() {
-    const t = now();
-    $('#team .nm').textContent = [cfg.car && ('#' + cfg.car), cfg.team].filter(Boolean).join(' ');
-    $('#team .drv').textContent = driverNow() ? 'Roolis: ' + driverNow() : '';
-    let clk = '';
+    var t = now();
+    var name = [cfg.car && ('#' + cfg.car), cfg.team].filter(Boolean).join(' ');
+    var drv = driverNow(t), clk = '';
     if (cfg.start) {
-      const [h, m] = cfg.start.split(':').map(Number), s = new Date(t); s.setHours(h, m || 0, 0, 0);
-      const el = t - s.getTime();
-      if (el >= 0) clk = fmtHMS(el) + (cfg.dur ? '  / jäänud ' + fmtHMS(cfg.dur * 3600e3 - el) : '');
+      var hm = cfg.start.split(':').map(Number), s = new Date(t); s.setHours(hm[0] || 0, hm[1] || 0, 0, 0);
+      var el = t - s.getTime();
+      if (el >= 0 && (!cfg.dur || el < cfg.dur * 3600e3 + 3600e3)) clk = fmtHMS(el) + (cfg.dur ? '  / jäänud ' + fmtHMS(cfg.dur * 3600e3 - el) : '');
     }
+    $('#team .nm').textContent = name;
+    $('#team .drv').textContent = drv ? 'Roolis: ' + drv : '';
     $('#team .clk').textContent = clk;
-    if (!hidden.has('team')) $('#team').classList.toggle('hide', !$('#team .nm').textContent && !clk && !driverNow());
+    if (hidden.indexOf('team') < 0) $('#team').classList.toggle('hide', !name && !clk && !drv);
 
-    const n = S.laps.length;
+    var n = S.laps.length, last = n ? S.laps[n - 1] : null;
     $('#lap .n').textContent = S.lastCross != null ? String(n + 1) : '–';
     $('#lap .cur').textContent = S.lastCross != null ? fmt(t - S.lastCross) : '–:––.–';
-    const last = n ? S.laps[n - 1] : null;
-    $('#lap .last').textContent = last ? fmt(last.ms) + (last.pit ? ' (boks)' : '') : '–';
-    const dl = $('#lap .delta');
-    if (last && !last.pit && S.best != null && n > 1) {
-      const d = (last.ms - S.best) / 1000; dl.textContent = (d > 0 ? '+' : '') + d.toFixed(1);
-      dl.className = 'delta num ' + (d > 0 ? 'dpos' : 'dneg');
+    $('#lap .last').textContent = last ? fmt(last.ms) + (last.unc ? ' (?)' : last.slow ? ' (boks/aegl.)' : '') : '–';
+    var dl = $('#lap .delta');
+    if (last && !last.slow && last.ref != null) {
+      var dd = (last.ms - last.ref) / 1000; dl.textContent = (dd > 0 ? '+' : '') + dd.toFixed(1);
+      dl.className = 'delta num ' + (dd > 0 ? 'dpos' : 'dneg');
     } else dl.textContent = '';
     $('#lap .best').textContent = fmt(S.best);
 
-    $('#spd .v').textContent = speedKmh == null ? '–' : Math.round(speedKmh);
-    drawMap();
-    const age = lastFix ? (t - lastFix) / 1000 : null;
-    $('#st').textContent = (cfg.demo ? 'DEMO · ' : '') + (src || '') +
-      (lastFix ? ' · GPS ' + (lastAcc != null ? '±' + Math.round(lastAcc) + ' m' : 'ok') + (age > 5 ? ' · signaal ' + Math.round(age) + ' s vana' : '') : ' · ootan GPS-i') + (errMsg ? ' · ' + errMsg : '');
-  }
-  setInterval(render, 100);
+    var age = lastGood ? (t - lastGood) / 1000 : null, stale = age == null || age > 4;
+    $('#spd .v').textContent = (speedKmh == null || stale) ? '–' : String(Math.round(speedKmh < 3 ? 0 : speedKmh));
+    $('#spd').classList.toggle('stale', lastGood != null && stale);
+    if (mapDirty) { drawMap(); mapDirty = false; }
 
-  // sources
-  let src = '', errMsg = '';
+    var msg = errMsg || saveErr;
+    var stEl = $('#st');
+    stEl.className = 'num' + (msg || (lastGood && stale) ? ' err' : '');
+    stEl.textContent = (cfg.demo ? 'DEMO · ' : '') + src +
+      (lastGood ? (stale ? ' · GPS kadunud ' + Math.round(age) + ' s' : ' · GPS ' + (lastAcc != null ? '±' + Math.round(lastAcc) + ' m' : 'ok'))
+                : (lastAcc != null ? ' · GPS ebatäpne ±' + Math.round(lastAcc) + ' m' : ' · ootan GPS-i')) +
+      (msg ? ' · ' + msg : '');
+  }
+  setInterval(render, 200);
+
   if (cfg.demo) { src = 'demo'; startDemo(); }
   else if (cfg.rtirl) {
     src = 'RealtimeIRL';
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@rtirl/api@1.2.5/lib/index.min.js';
-    s.onload = () => {
-      let spd = null;
-      const api = window.RealtimeIRL.forPullKey(cfg.rtirl, { forceWebSockets: true });
-      api.addSpeedListener(v => { spd = v; });
-      api.addLocationListener(l => { if (l && isFinite(l.latitude)) onFix({ lat: l.latitude, lon: l.longitude, t: now(), speed: spd, acc: null }); });
+    var sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/@rtirl/api@1.2.5/lib/index.min.js';
+    sc.onload = function () {
+      try {
+        var spd = null, lastKey = '';
+        var api = window.RealtimeIRL.forPullKey(cfg.rtirl, { forceWebSockets: true });
+        api.addSpeedListener(function (v) { spd = v; });
+        api.addLocationListener(function (l) {
+          if (!l || !isFinite(l.latitude)) return;
+          var k = l.latitude + ',' + l.longitude; if (k === lastKey) return; lastKey = k;
+          errMsg = '';
+          onFix({ lat: l.latitude, lon: l.longitude, t: now(), speed: spd, acc: null });
+        });
+      } catch (e) { errMsg = 'RealtimeIRL viga'; }
     };
-    s.onerror = () => { errMsg = 'RealtimeIRL skript ei laadinud'; };
-    document.head.appendChild(s);
+    sc.onerror = function () { errMsg = 'RealtimeIRL skript ei laadinud'; };
+    document.head.appendChild(sc);
   } else if ('geolocation' in navigator) {
     src = 'telefoni GPS';
     navigator.geolocation.watchPosition(
-      p => { errMsg = ''; onFix({ lat: p.coords.latitude, lon: p.coords.longitude, t: p.timestamp || now(), speed: p.coords.speed, acc: p.coords.accuracy }); },
-      e => { errMsg = 'GPS viga: ' + (e.code === 1 ? 'luba puudub' : e.message || e.code); },
+      function (p) { errMsg = ''; onFix({ lat: p.coords.latitude, lon: p.coords.longitude, t: p.timestamp, speed: p.coords.speed, acc: p.coords.accuracy }); },
+      function (e) { errMsg = 'GPS viga: ' + (e.code === 1 ? 'luba puudub (lülita äpis geo/asukoht sisse)' : (e.message || e.code)); },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
-  } else { errMsg = 'brauseris pole GPS-i'; }
+  } else errMsg = 'brauseris pole GPS-i';
 
-  // demo: pit-lane exit then laps of a synthetic ~2 km circuit at 1 Hz with noise
+  // demo: pit-lane run-in, then laps of a synthetic ~2 km loop at 1 Hz with noise
   function startDemo() {
-    const lat0 = 58.4005, lon0 = 24.4505, k = Math.cos(lat0 * Math.PI / 180);
-    const shape = th => { const r = 320 + 90 * Math.sin(3 * th) + 40 * Math.cos(5 * th); return [r * Math.cos(th) * 1.3, r * Math.sin(th)]; };
-    let th = 0, pit = 12, tt = now();
-    setInterval(() => {
-      const dt = 1000;
-      tt += dt;
-      let x, y, v;
-      if (pit > 0) { const p = shape(0); x = p[0] - pit * 12; y = p[1] - 60 + pit * 3; v = 15; pit--; }
+    var lat0 = 58.4005, lon0 = 24.4505, k = Math.cos(lat0 * Math.PI / 180);
+    function shape(th) { var r = 320 + 90 * Math.sin(3 * th) + 40 * Math.cos(5 * th); return [r * Math.cos(th) * 1.3, r * Math.sin(th)]; }
+    var th = 0, pit = 12;
+    simT = Date.now(); simReal = Date.now();
+    setInterval(function () {
+      simT += 1000; simReal = Date.now();
+      var x, y, v;
+      if (pit > 0) { var p0 = shape(0); x = p0[0] - pit * 12; y = p0[1] - 60 + pit * 3; v = 15; pit--; }
       else {
-        const curv = Math.abs(Math.sin(3 * th)); v = 22 + 14 * (1 - curv) + (Math.random() - .5) * 2;
-        const p0 = shape(th), p1 = shape(th + 0.001), seg = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / 0.001;
-        th += v * (dt / 1000) / seg; [x, y] = shape(th);
+        var curv = Math.abs(Math.sin(3 * th)); v = 22 + 14 * (1 - curv) + (Math.random() - .5) * 2;
+        var a = shape(th), b = shape(th + 0.001), seg = Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.001;
+        th += v / seg; var c = shape(th); x = c[0]; y = c[1];
       }
       x += (Math.random() - .5) * 4; y += (Math.random() - .5) * 4;
-      onFix({ lat: lat0 + y / 110540, lon: lon0 + x / (111320 * k), t: tt, speed: v, acc: 4 });
+      onFix({ lat: lat0 + y / 110540, lon: lon0 + x / (111320 * k), t: simT, speed: v, acc: 4 });
     }, 1000 / cfg.speedup);
   }
 })();
