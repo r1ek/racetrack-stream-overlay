@@ -167,23 +167,23 @@
   var hist = [];           // recent moving points {x,y,t,h,d}
   var prev = null;         // last accepted point
   var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0, pending = null, jumps = 0;
-  var calib = [], clockOff = null, histBreak = true;
+  var skew = [], clockOff = 0, histBreak = true;
 
   function onFix(f) {
     if (f.acc != null && f.acc > cfg.maxAcc) { lastAcc = f.acc; return; }
-    // measurement time on the device clock; a constant offset is calibrated once (only if the
-    // source clock is clearly off), so lap durations never change and old fixes stay old
+    // measurement time is on the device clock (same phone); only a consistent skew over 20 fixes
+    // (spread < 1 s) is adopted as an offset, so delayed deliveries never become fresh
     var t = now();
     if (isFinite(f.t)) {
-      if (clockOff == null) {
-        calib.push(now() - f.t);
-        if (calib.length < 5) return;
-        var m = calib.slice().sort(function (a, b) { return a - b; })[2];
-        clockOff = Math.abs(m) > 2000 ? m : 0;
-      }
       t = f.t + clockOff;
       var age = now() - t;
-      if (age > 3000 || age < -2000) return;            // stale or from the future
+      if (age > 3000 || age < -2000) {
+        skew.push(now() - f.t); if (skew.length > 20) skew.shift();
+        var mn = Math.min.apply(null, skew), mx = Math.max.apply(null, skew);
+        if (skew.length === 20 && mx - mn < 1000) { clockOff = (mn + mx) / 2; skew = []; }
+        return;
+      }
+      skew = [];
     }
     if (prev && t <= prev.t) return;                     // non-monotonic
     var p = proj(f.lat, f.lon);
