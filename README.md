@@ -1,4 +1,4 @@
-# mm-overlay
+# racetrack-stream-overlay
 
 Transparent live overlay for an in-car phone stream (CameraFi Live / IRL Pro web overlay): speed, lap timer (current / last / best / delta), lap count, learned track map, team / driver / race clock.
 

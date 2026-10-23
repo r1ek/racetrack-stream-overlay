@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MM overlay</title>
+<title>Racetrack stream overlay</title>
 <style>
   :root { --s: 1; --bg: rgba(0,0,0,.55); --fg: #fff; --acc: #ffcc00; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
     font-family: "Roboto Condensed", "Arial Narrow", Arial, sans-serif; color: var(--fg); }
   .box { position: absolute; background: var(--bg); border-radius: calc(1.2vmin * var(--s));
-    padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 0 .4vmin #000; }
+    padding: calc(1vmin * var(--s)) calc(1.6vmin * var(--s)); text-shadow: 0 1px 1px #000; }
   .num { font-variant-numeric: tabular-nums; font-family: "Roboto Mono", Menlo, Consolas, monospace; }
   #team { top: 2vmin; left: 2vmin; max-width: 42vw; font-size: calc(3.2vmin * var(--s)); line-height: 1.15; }
   #team > div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -139,7 +139,7 @@
 
   var hist = [];           // recent moving points {x,y,t,h,d}
   var prev = null;         // last accepted point
-  var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0, pending = null;
+  var lastGood = null, lastAcc = null, speedKmh = null, farCount = 0, odo = 0, pending = null, jumps = 0;
   var offs = [], baseOff = 0;
 
   function onFix(f) {
@@ -165,14 +165,19 @@
     if (prev) {
       var dt = (p.t - prev.t) / 1000, d = dist(p, prev);
       if (dt < 0.3) return;                              // duplicate / burst
-      if (d / dt > 90) return;                           // >320 km/h jump: outlier
-      if (dt > cfg.maxGap) {
-        S.unc = true; prev = null; pending = null;
+      if (d / dt > 90) { if (++jumps < 3) return; prev = null; }   // outlier; 3 in a row = prev was the bad one
+      else jumps = 0;
+      if (!prev) { /* fall through: restart continuity at p */ }
+      else if (dt > cfg.maxGap) {
+        // timing depends only on the line crossings: a gap matters near the line or when long
+        if (!S.anchor || dt > 30 || dist(prev, S.anchor) < 300 || dist(p, S.anchor) < 300) S.unc = true;
+        prev = null; pending = null;
         if (!S.anchor) hist = [];                        // never learn across an unobserved stretch
       } else {
         if (v == null) v = d / dt;
         p.h = d > 3 ? hdg(prev, p) : prev.h;
-        odo += d; p.d = odo;
+        if (v > 2) odo += d;
+        p.d = odo;
         if (S.anchor) checkGate(prev, p);
       }
     }
@@ -332,8 +337,9 @@
     setText('#lap .last', last ? fmt(last.ms) + (last.unc ? ' (?)' : last.slow ? ' (boks/aegl.)' : '') : '–');
     var dl = $('#lap .delta');
     if (last && !last.slow && last.ref != null) {
-      var dd = (last.ms - last.ref) / 1000; dl.textContent = (dd > 0 ? '+' : '') + dd.toFixed(1);
-      dl.className = 'delta num ' + (dd > 0 ? 'dpos' : 'dneg');
+      var dd = Math.round((last.ms - last.ref) / 100) / 10;
+      dl.textContent = dd === 0 ? '±0.0' : (dd > 0 ? '+' : '') + dd.toFixed(1);
+      dl.className = 'delta num ' + (dd > 0 ? 'dpos' : dd < 0 ? 'dneg' : '');
     } else dl.textContent = '';
     setText('#lap .best', fmt(S.best));
 
